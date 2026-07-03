@@ -17,7 +17,7 @@
 # kept in sync with the canonical maintained list by copying that list's body
 # verbatim on each refresh (the package names are public threat intel).
 
-LAST_REFRESHED: 2026-06-19
+LAST_REFRESHED: 2026-07-03
 
 # source: ReversingLabs — Atomic/Exodus wallet stealer
 ethers-provider2
@@ -496,3 +496,117 @@ pyphetools
 # source: Socket — Mastra supply-chain attack; easy-day-js typosquat of dayjs injected into 140+ @mastra/* packages, cross-platform infostealer postinstall hook (Jun 17 2026)
 #   https://socket.dev/blog/mastra-npm-packages-compromised
 easy-day-js
+
+# source: https://socket.dev/supply-chain-attacks/miasma-mini-shai-hulud-supply-chain-attack — 2026-06-27
+leo-logger
+leo-connector-oracle
+leo-sdk
+leo-auth
+leo-connector-mysql
+leo-aws
+leo-connector-elasticsearch
+leo-streams
+serverless-leo
+leo-cli
+rstreams-metrics
+solo-nav
+serverless-convention
+leo-cron
+leo-connector-redshift
+leo-connector-mongo
+leo-cache
+leo-cdk-lib
+rstreams-shard-util
+leo-config
+hexo-shoka-swiper
+hexo-deployer-wrangler
+prism-silq
+github.com/verana-labs/verana-blockchain
+github.com/verana-labs/verana
+@immobiliarelabs/backstage-plugin-gitlab
+@immobiliarelabs/backstage-plugin-gitlab-backend
+@immobiliarelabs/backstage-plugin-ldap-auth-backend
+@immobiliarelabs/backstage-plugin-ldap-auth
+github.com/erbieio/erbie
+
+# source: https://socket.dev/supply-chain-attacks/polinrider — 2026-07-01
+github.com/zainirfan13/graphql-client
+github.com/pedrocost4/learninggo
+github.com/barsu5489/linked-list
+github.com/lambda-platform/lambda
+github.com/rajpdus/meetingsummarizer
+github.com/telexintegrations/telex-cve-monitor
+github.com/workshopapps/pictureminer.api
+github.com/zurichat/zc_core
+github.com/Setsu548/Desuna-payment-platform
+github.com/setsu548/desuna-payment-platform
+github.com/shariyerShazan/goLang-fiber-api-prac
+github.com/shariyershazan/golang-fiber-api-prac
+github.com/ibitolamayowa/zurichatbot
+github.com/dpkkmishra/caddy-auth-jwt
+github.com/khunhai1/GopherTicTacToe
+github.com/khunhai1/gophertictactoe
+github.com/rafiquecudjoe/go-basics
+github.com/paccyc/mystrings
+github.com/PaccyC/myStrings
+github.com/telexintegrations/grafana-loki-monitor
+github.com/hammad-umar/go-movies-api
+github.com/dpkkmishra/caddy-jwt-test
+github.com/telexintegrations/ekefan-go
+github.com/lambda-platform/dan
+github.com/Setsu548/Logistic
+github.com/lambda-platform/ebarimt-rest-api
+github.com/rajpdus/MeetingSummarizer
+github.com/hngi/Team-Fierce-Backend-Golang
+github.com/hngi/team-fierce-backend-golang
+html-to-gutenberg
+fetch-page-assets
+github.com/amantsehay/a2sv-go-course
+github.com/lushiv/jwt-authentication-go-gin
+github.com/reauheau/goaubio
+github.com/uchebuego/towncrier
+github.com/setsu548/logistic
+github.com/PedroCost4/LearningGo
+github.com/backtesting-org/live-trading
+github.com/opentoolbox-gh/golang-json-base
+github.com/anatoli-derese/a2sv-excercise
+github.com/barsu5489/commerce
+github.com/Barsu5489/commerce
+github.com/rickt/gsuitemdm
+github.com/glacialspring/intfloatmap
+github.com/zksync-sdk/zksync-sdk-go
+github.com/emmadedayo/gobasic
+github.com/glacialspring/static
+github.com/natib21/go-lang
+github.com/bm-197/golang-experiments
+github.com/naol7/dist-task-scheduler
+github.com/dexbotsdev/uniswap-v2-v3-arbitrage
+github.com/rickt/slack-weather-bot
+github.com/bm-197/chill
+github.com/glacialspring/go-winsparkle
+github.com/re-gis/gin-commerce
+github.com/bm-197/tessera
+github.com/nizigama/linux-server-monitor
+github.com/mooooonstar/red-or-black
+github.com/xpos587/git2md
+github.com/Faisal-Sha/gumus-task-grok
+github.com/faisal-sha/gumus-task-grok
+github.com/MooooonStar/ant
+github.com/mooooonstar/ant
+github.com/uit-21522592/golangwebdev
+github.com/mprogrammer2020/snipper-bot-uniswap
+github.com/re-gis/bms_api
+github.com/mooooonstar/testmod
+github.com/mooooonstar/toychain
+github.com/almamuncsit/golang
+github.com/lanvige/mixin-sdk
+github.com/thecodeghinux/go-auth
+github.com/TheCodeGhinux/go-auth
+github.com/MooooonStar/testmod
+github.com/TheCodeGhinux/week-win
+github.com/thecodeghinux/week-win
+github.com/The-iyed/mangomatch
+github.com/Xpos587/git2md
+github.com/TheCodeGhinux/TaskHub
+github.com/thecodeghinux/taskhub
+github.com/the-iyed/mangomatch
