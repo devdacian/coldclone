@@ -1,0 +1,72 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Cross-model review output",
+  "description": "Structured output the external cross-model reviewer must emit via the active runtime wrapper's schema-constrained output mode. The orchestrator consumes these fields for evidence verification (cited_evidence + evidence_quote), the contested-rejection re-raise match (location_concept), and the severity-gated termination teeth (severity). All fields are required; in the free-text string fields use a clear placeholder such as \"n/a\" where a field does not apply. Note severity is enum-constrained (always one of HIGH/MEDIUM/LOW) — never \"n/a\".",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "verdict": {
+      "type": "string",
+      "description": "One-line overall verdict for this round (informational only; the orchestrator decides actionability from the per-finding dispositions, not from this string). E.g. 'findings present' or 'no actionable findings'."
+    },
+    "findings": {
+      "type": "array",
+      "description": "Every finding raised this round. An empty array is valid (a clean round).",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "severity": {
+            "type": "string",
+            "enum": ["HIGH", "MEDIUM", "LOW"],
+            "description": "Finding severity. The termination teeth gate on HIGH (both axes) and MEDIUM (inference-disputed)."
+          },
+          "file": {
+            "type": "string",
+            "description": "Repo-relative path of the cited file, or 'n/a' for a pure design/prose/web-backed finding with no file-level claim."
+          },
+          "line": {
+            "type": "string",
+            "description": "Cited line or line range (e.g. '147' or '147-150'), or 'n/a'. A string because ranges and 'n/a' are valid; line numbers drift, so location_concept is the durable locator."
+          },
+          "location_concept": {
+            "type": "string",
+            "description": "Durable section/anchor/symbol locator (e.g. a heading title or function name) the re-raise match keys on, because raw line numbers drift between rounds."
+          },
+          "lens": {
+            "type": "string",
+            "description": "The review lens this finding came from (e.g. 'stale references', 'source-of-truth drift', 'cross-phase lifecycle'), or 'design' for a design-level concern."
+          },
+          "claim": {
+            "type": "string",
+            "description": "The finding itself: what is wrong and why it matters."
+          },
+          "cited_evidence": {
+            "type": "string",
+            "description": "The concrete evidence the claim rests on so the orchestrator can verify it. For repo/local evidence include file:line, token, exit code, or regex. For web-backed evidence include URL, source title/name or source class, access date, and availability status. For an unresolved external premise, identify the unresolved premise and the attempted source/check."
+          },
+          "evidence_quote": {
+            "type": "string",
+            "description": "A short verbatim quote or evidence excerpt from the cited code/prose/source so verification can confirm the substance, not just the coordinate. For unresolved external premises, quote the closest relevant local or external evidence, or use a clear placeholder explaining that no authoritative quote was available."
+          },
+          "suggested_fix": {
+            "type": "string",
+            "description": "The reviewer's proposed remediation (a suggestion the orchestrator critically evaluates, not a directive)."
+          }
+        },
+        "required": [
+          "severity",
+          "file",
+          "line",
+          "location_concept",
+          "lens",
+          "claim",
+          "cited_evidence",
+          "evidence_quote",
+          "suggested_fix"
+        ]
+      }
+    }
+  },
+  "required": ["verdict", "findings"]
+}

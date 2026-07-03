@@ -1,0 +1,21 @@
+{
+  "name": "coldclone",
+  "owner": {
+    "name": "Dacian"
+  },
+  "metadata": {
+    "version": "0.1.0",
+    "description": "Claude Code plugin marketplace for Coldclone"
+  },
+  "plugins": [
+    {
+      "name": "coldclone",
+      "version": "0.1.0",
+      "description": "Host-side gauntlet for fetching, scanning, and sanitizing untrusted repositories before any agent, editor, or toolchain opens them.",
+      "author": {
+        "name": "Dacian"
+      },
+      "source": "."
+    }
+  ]
+}

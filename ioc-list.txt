@@ -1,0 +1,498 @@
+# Indicators of Compromise — known-malicious package names across npm / PyPI / cargo / Go ecosystems.
+#
+# Consumed by ioc_scan.py (the coldclone IoC gate). A hit in any lockfile of a
+# cloned repo HALTs coldclone prep with a loud message — these are
+# confirmed-malicious package identifiers (typosquats, supply-chain compromises,
+# DPRK/Lazarus drops, infostealer campaigns), not malware-family labels.
+#
+# Format: one IoC per line in the body. Lines starting with `#` are comments and
+# preserve source attribution. Empty lines are allowed for readability.
+#
+# Provenance is load-bearing — NEVER remove existing entries. Append new entries
+# grouped by source with a `# source: URL — date` comment block, and update the
+# LAST_REFRESHED header below. ioc_scan.py warns when LAST_REFRESHED is >7 days
+# stale; refresh quarterly at minimum.
+#
+# This is the bundled standalone copy for the open-source coldclone tool. It is
+# kept in sync with the canonical maintained list by copying that list's body
+# verbatim on each refresh (the package names are public threat intel).
+
+LAST_REFRESHED: 2026-06-19
+
+# source: ReversingLabs — Atomic/Exodus wallet stealer
+ethers-provider2
+ethers-providerz
+pdf-to-office
+
+# source: Socket — 35-package Contagious Interview drop (Apr 2025)
+#   https://socket.dev/blog/north-korean-contagious-interview-campaign-drops-35-new-malicious-npm-packages
+react-plaid-sdk
+sumsub-node-websdk
+vite-plugin-next-refresh
+vite-plugin-purify
+nextjs-insight
+vite-plugin-svgn
+node-loggers
+react-logs
+reactbootstraps
+framer-motion-ext
+serverlog-dispatch
+mongo-errorlog
+next-log-patcher
+vite-plugin-tools
+pixel-percent
+test-topdev-logger-v1
+test-topdev-logger-v3
+server-log-engine
+logbin-nodejs
+vite-loader-svg
+struct-logger
+flexible-loggers
+beautiful-plugins
+chalk-config
+jsonpacks
+jsonspecific
+jsonsecs
+util-buffers
+blur-plugins
+proc-watch
+node-orm-mongoose
+prior-config
+use-videos
+lucide-node
+router-parse
+
+# source: Socket — Contagious Interview 2026 cross-ecosystem batch
+dev-log-core
+logger-base
+logkitx
+pino-debugger
+debug-fmt
+debug-glitz
+
+# source: Panther/Talos — OtterCookie infostealer drops (Oct 2025 — Apr 2026)
+bjs-lint-builders
+bjs-lint-builder
+bjs-biginteger
+hjs-lint-builders
+sjs-builders
+sjs-builder
+npm-doc-builder
+
+# source: Socket — early Contagious Interview (Apr 2025)
+cln-logger
+node-clog
+consolidate-log
+consolidate-logger
+
+# source: Datamation/CyberSecurityNews — 338-pkg typosquat batch
+epxreso
+epxresso
+epxressoo
+dotevn
+boby_parser
+redux-saga-sentinel
+
+# source: Lazarus bigmathutils crypto exchange targeting (Feb 2026)
+bigmathutils
+
+# source: Mandiant/Google — axios compromise dependency injected 2026-03-31
+plain-crypto-js
+
+# source: Aikido — G_Wagon Python stealer via npm (Apr 2026)
+ansi-universal-ui
+
+# source: Sonatype — Bladeroid infostealer
+deuplouded
+snipersee
+sniperser
+sniperv1
+sniperv2
+
+# source: Socket — CanisterWorm self-propagating worm (Apr 2026)
+pgserve
+@automagik/genie
+@fairwords/websocket
+@fairwords/loopback-connector-es
+@openwebconcept/design-tokens
+@openwebconcept/theme-owc
+
+# source: Socket — PyPI Contagious Interview cross-ecosystem
+logutilkit
+apachelicense
+fluxhttp
+license-utils-kit
+
+# source: ReversingLabs — BIPClip PyPI crypto wallet mnemonic stealer (Jan 2026)
+mnemonic_to_address
+bip39_mnemonic_decrypt
+
+# source: ReversingLabs — aiocpa PyPI infostealer
+aiocpa
+
+# source: cargo / crates.io — Contagious Interview
+logtrace
+
+# source: Go modules — Contagious Interview (paths via 'formstash' / 'mit-license-pkg')
+formstash
+mit-license-pkg
+
+# source: Prior known (ethers-providerz cluster + typosquats)
+@async-mutex/async-mutex
+node-hide-console-window
+node-forge-test
+pumptoolforvolumeandcomment
+
+# source: Socket — galedonovan typosquat batch, Solana/Ethereum private-key exfil (Mar 2026)
+#   https://socket.dev/blog/5-malicious-npm-packages-typosquat-solana-and-ethereum-libraries-steal-private-keys
+raydium-bs58
+base-x-64
+base_xd
+bs58-basic
+ethersproject-wallet
+
+# source: StepSecurity/BleepingComputer — elementary-data PyPI v0.23.3 infostealer (Apr 2026)
+#   https://www.bleepingcomputer.com/news/security/pypi-package-with-11m-monthly-downloads-hacked-to-push-infostealer/
+elementary-data
+
+# source: Socket / SafeDep / StepSecurity / Endor Labs — Mini Shai-Hulud npm self-propagating worm (May 11-18 2026; TanStack/UiPath/Squawk/TallyUI/Mistral/Guardrails wave)
+#   https://thecybersecguru.com/news/mini-shai-hulud-npm-worm-affected-packages-list/
+#   https://safedep.io/mass-npm-supply-chain-attack-tanstack-mistral/
+#   https://www.stepsecurity.io/blog/mini-shai-hulud-is-back-a-self-spreading-supply-chain-attack-hits-the-npm-ecosystem
+@beproduct/nestjs-auth
+@cap-js/db-service
+@cap-js/postgres
+@cap-js/sqlite
+@dirigible-ai/sdk
+@draftauth/client
+@draftauth/core
+@draftlab/auth
+@draftlab/auth-router
+@draftlab/db
+@mesadev/rest
+@mesadev/saguaro
+@mesadev/sdk
+@mistralai/mistralai
+@mistralai/mistralai-azure
+@mistralai/mistralai-gcp
+@ml-toolkit-ts/preprocessing
+@ml-toolkit-ts/xgboost
+@opensearch-project/opensearch
+@squawk/airport-data
+@squawk/airports
+@squawk/airspace
+@squawk/airspace-data
+@squawk/airway-data
+@squawk/airways
+@squawk/fix-data
+@squawk/fixes
+@squawk/flight-math
+@squawk/flightplan
+@squawk/geo
+@squawk/icao-registry
+@squawk/icao-registry-data
+@squawk/mcp
+@squawk/navaid-data
+@squawk/navaids
+@squawk/notams
+@squawk/procedure-data
+@squawk/procedures
+@squawk/types
+@squawk/units
+@squawk/weather
+@supersurkhet/cli
+@supersurkhet/sdk
+@tallyui/components
+@tallyui/connector-medusa
+@tallyui/connector-shopify
+@tallyui/connector-vendure
+@tallyui/connector-woocommerce
+@tallyui/core
+@tallyui/database
+@tallyui/pos
+@tallyui/storage-sqlite
+@tallyui/theme
+@tanstack/arktype-adapter
+@tanstack/eslint-plugin-router
+@tanstack/eslint-plugin-start
+@tanstack/history
+@tanstack/nitro-v2-vite-plugin
+@tanstack/react-router
+@tanstack/react-router-devtools
+@tanstack/react-router-ssr-query
+@tanstack/react-start
+@tanstack/react-start-client
+@tanstack/react-start-rsc
+@tanstack/react-start-server
+@tanstack/router-cli
+@tanstack/router-core
+@tanstack/router-devtools
+@tanstack/router-devtools-core
+@tanstack/router-generator
+@tanstack/router-plugin
+@tanstack/router-ssr-query-core
+@tanstack/router-utils
+@tanstack/router-vite-plugin
+@tanstack/solid-router
+@tanstack/solid-router-devtools
+@tanstack/solid-router-ssr-query
+@tanstack/solid-start
+@tanstack/solid-start-client
+@tanstack/solid-start-server
+@tanstack/start-client-core
+@tanstack/start-fn-stubs
+@tanstack/start-plugin-core
+@tanstack/start-server-core
+@tanstack/start-static-server-functions
+@tanstack/start-storage-context
+@tanstack/valibot-adapter
+@tanstack/virtual-file-routes
+@tanstack/vue-router
+@tanstack/vue-router-devtools
+@tanstack/vue-router-ssr-query
+@tanstack/vue-start
+@tanstack/vue-start-client
+@tanstack/vue-start-server
+@tanstack/zod-adapter
+@taskflow-corp/cli
+@tolka/cli
+@uipath/access-policy-sdk
+@uipath/access-policy-tool
+@uipath/admin-tool
+@uipath/agent-sdk
+@uipath/agent-tool
+@uipath/agent.sdk
+@uipath/aops-policy-tool
+@uipath/ap-chat
+@uipath/api-workflow-tool
+@uipath/apollo-core
+@uipath/apollo-react
+@uipath/apollo-wind
+@uipath/auth
+@uipath/case-tool
+@uipath/cli
+@uipath/codedagent-tool
+@uipath/codedagents-tool
+@uipath/codedapp-tool
+@uipath/common
+@uipath/context-grounding-tool
+@uipath/data-fabric-tool
+@uipath/docsai-tool
+@uipath/filesystem
+@uipath/flow-tool
+@uipath/functions-tool
+@uipath/gov-tool
+@uipath/identity-tool
+@uipath/insights-sdk
+@uipath/insights-tool
+@uipath/integrationservice-sdk
+@uipath/integrationservice-tool
+@uipath/llmgw-tool
+@uipath/maestro-sdk
+@uipath/maestro-tool
+@uipath/orchestrator-tool
+@uipath/packager-tool-apiworkflow
+@uipath/packager-tool-bpmn
+@uipath/packager-tool-case
+@uipath/packager-tool-connector
+@uipath/packager-tool-flow
+@uipath/packager-tool-functions
+@uipath/packager-tool-webapp
+@uipath/packager-tool-workflowcompiler
+@uipath/packager-tool-workflowcompiler-browser
+@uipath/platform-tool
+@uipath/project-packager
+@uipath/resource-tool
+@uipath/resourcecatalog-tool
+@uipath/resources-tool
+@uipath/robot
+@uipath/rpa-legacy-tool
+@uipath/rpa-tool
+@uipath/solution-packager
+@uipath/solution-tool
+@uipath/solutionpackager-sdk
+@uipath/solutionpackager-tool-core
+@uipath/tasks-tool
+@uipath/telemetry
+@uipath/test-manager-tool
+@uipath/tool-workflowcompiler
+@uipath/traces-tool
+@uipath/ui-widgets-multi-file-upload
+@uipath/uipath-python-bridge
+@uipath/vertical-solutions-tool
+@uipath/vss
+@uipath/widget.sdk
+agentwork-cli
+cmux-agent-mcp
+cross-stitch
+git-branch-selector
+git-git-git
+intercom-client
+mbt
+ml-toolkit-ts
+nextmove-mcp
+safe-action
+ts-dna
+wot-api
+
+# source: Endor Labs — Mini Shai-Hulud AntV-ecosystem burst (May 19 2026, partial enumeration; full roster in OSV malicious-packages)
+#   https://www.endorlabs.com/learn/mini-shai-hulud-returns-42-malicious-npm-packages-fake-sigstore-badges-in-antv-ecosystem-attack
+@antv/l7-core
+@antv/scale
+@antv/g-plugin-svg-picker
+@antv/l7-layers
+@antv/g-lite
+@antv/l7-renderer
+@antv/path-util
+@antv/g-plugin-canvas-picker
+@antv/g-device-api
+@antv/g6-pc
+@antv/x6-react-components
+@antv/g6
+jest-canvas-mock
+jest-date-mock
+jest-electron
+jest-random-mock
+jest-less-loader
+jest-url-loader
+size-sensor
+timeago.js
+timeago-react
+echarts-for-react
+mcp-echarts
+mcp-mermaid
+ai-figure
+canvas-nest.js
+ribbon.js
+
+# source: Mini Shai-Hulud — PyPI cross-overs ('lightning' excluded — collides with legitimate PyTorch Lightning; only one source)
+guardrails-ai
+mistralai
+
+# source: The Hacker News / Socket — Four copycat infostealer/DDoS-bot npm packages (May 18 2026)
+#   https://thehackernews.com/2026/05/four-malicious-npm-packages-deliver.html
+#   chalk-tempalte = typosquat of chalk-template; axois-utils = typosquat of axios-utils;
+#   color-style-utils + @deadcode09284814/axios-util = pure-malicious names. Carry Shai-Hulud
+#   infostealer clone (chalk-tempalte) and Phantom Bot Golang DDoS (axois-utils).
+chalk-tempalte
+@deadcode09284814/axios-util
+axois-utils
+color-style-utils
+
+# source: OX Security — mouse5212-super-formatter infostealer that leaked its own GitHub token (May 27 2026)
+#   https://www.ox.security/blog/malware-slop-new-malicious-npm-package-leaks-its-own-github-private-token
+mouse5212-super-formatter
+
+# source: Socket — TrapDoor cross-ecosystem crypto/DeFi/Solana/Move credential-stealer + AI-assistant config poisoning (disclosed May 24 2026; earliest artifact May 22 2026 — pre-LAST_REFRESHED backfill of a prior-refresh gap)
+#   https://socket.dev/blog/trapdoor-crypto-stealer-npm-pypi-crates
+#   npm (build.rs/postinstall/import-time payload trap-core.js):
+async-pipeline-builder
+build-scripts-utils
+chain-key-validator
+crypto-credential-scanner
+defi-env-auditor
+defi-threat-scanner
+deployment-key-auditor
+dev-env-bootstrapper
+eth-wallet-sentinel
+llm-context-compressor
+mnemonic-safety-check
+model-switch-router
+node-setup-helpers
+project-init-tools
+prompt-engineering-toolkit
+solidity-deploy-guard
+token-usage-tracker
+wallet-backup-verifier
+wallet-security-checker
+web3-secrets-detector
+workspace-config-loader
+#   PyPI (TrapDoor):
+cryptowallet-safety
+data-pipeline-check
+defi-risk-scanner
+env-loader-cli
+eth-security-auditor
+git-config-sync
+solidity-build-guard
+#   crates.io / cargo (TrapDoor — build.rs execution; Sui/Move tooling lures):
+move-analyzer-build
+move-compiler-tools
+move-project-builder
+sui-framework-helpers
+sui-move-build-helper
+sui-sdk-build-utils
+
+# source: ReversingLabs — "Miasma / The Spreading Blight" npm binding.gyp CI/CD-secret stealer (Jun 4 2026; 286 versions across 56 packages)
+#   https://www.reversinglabs.com/blog/npm-bindinggyp-cicd-secrets
+ai-sdk-ollama
+autotel
+autotel-adapters
+autotel-audit
+autotel-aws
+autotel-backends
+autotel-cli
+autotel-cloudflare
+autotel-devtools
+autotel-drizzle
+autotel-edge
+autotel-eventcatalog
+autotel-hono
+autotel-mcp
+autotel-mcp-instrumentation
+autotel-mongoose
+autotel-pact
+autotel-playwright
+autotel-plugins
+autotel-sentry
+autotel-subscribers
+autotel-tanstack
+autotel-terminal
+autotel-vitest
+autotel-web
+awaitly
+awaitly-analyze
+awaitly-libsql
+awaitly-mongo
+awaitly-postgres
+awaitly-visualizer
+create-wrangler-deploy
+effect-analyzer
+eslint-plugin-awaitly
+eslint-plugin-executable-stories-jest
+eslint-plugin-executable-stories-playwright
+eslint-plugin-executable-stories-vitest
+executable-stories-cypress
+executable-stories-demo
+executable-stories-formatters
+executable-stories-init
+executable-stories-jest
+executable-stories-mcp
+executable-stories-playwright
+executable-stories-react
+executable-stories-vitest
+@jagreehal/workflow
+mountly
+mountly-tailwind
+node-env-resolver
+node-env-resolver-aws
+node-env-resolver-dotenvx
+node-env-resolver-nextjs
+node-env-resolver-vite
+@vapi-ai/server-sdk
+wrangler-deploy
+
+# source: StepSecurity / The Hacker News — Hades PyPI campaign (Miasma evolution; Bun-based credential stealer + gh-token-monitor extortion daemon; 37 wheels across 19 packages, 7 named) (Jun 8 2026)
+#   https://www.stepsecurity.io/blog/the-hades-campaign-pypi-packages
+#   https://thehackernews.com/2026/06/hades-pypi-attack-19-packages-poisoned.html
+ensmallen
+mflux-streamlit
+nhmpy
+ppkt2synergy
+embiggen
+gpsea
+pyphetools
+
+# source: Socket — Mastra supply-chain attack; easy-day-js typosquat of dayjs injected into 140+ @mastra/* packages, cross-platform infostealer postinstall hook (Jun 17 2026)
+#   https://socket.dev/blog/mastra-npm-packages-compromised
+easy-day-js

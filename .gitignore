@@ -1,0 +1,18 @@
+# --- Touchstone (the adversarial cross-model review loop used to develop this repo).
+#     The methodology payload `.touchstone/methodology/` is VENDORED and COMMITTED so a
+#     contributor who checks out this repo has Touchstone ready (bump it with
+#     `touchstone/install.sh . --force`). Only Touchstone's mutable working artifacts
+#     (plans, per-topic logs, external reviews, the marker files) and local runtime
+#     config are ignored. This repo also keeps its OWN tracked CLAUDE.md / AGENTS.md
+#     (the product's agent instructions). ---
+/.touchstone/*
+!/.touchstone/methodology/
+/.claude/settings.local.json
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+.coverage

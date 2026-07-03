@@ -1,0 +1,34 @@
+{
+  "name": "coldclone",
+  "version": "0.1.0",
+  "description": "Host-side gauntlet for fetching, scanning, and sanitizing untrusted repositories before any agent, editor, or toolchain opens them.",
+  "author": {
+    "name": "Dacian"
+  },
+  "license": "MIT",
+  "keywords": [
+    "security",
+    "sandbox",
+    "prompt-injection",
+    "supply-chain",
+    "untrusted-code"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Coldclone",
+    "shortDescription": "Sanitize untrusted repos before opening them.",
+    "longDescription": "Coldclone is a host-side gauntlet for untrusted code. It performs a hardened fetch, scans lockfiles for known-malicious dependencies, quarantines auto-execution and agent prompt-injection surfaces, and refuses structurally unsafe trees before any editor, agent, or toolchain opens them.",
+    "developerName": "Dacian",
+    "category": "Security",
+    "capabilities": [
+      "Hardened untrusted repository fetch",
+      "Known-malicious dependency scan",
+      "Auto-execution and prompt-injection quarantine"
+    ],
+    "defaultPrompt": [
+      "Use Coldclone to prep this untrusted repo URL.",
+      "Sanitize this extracted ZIP folder with Coldclone.",
+      "Check whether this Coldclone tree is still inert."
+    ]
+  }
+}
