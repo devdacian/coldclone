@@ -17,7 +17,7 @@
 # kept in sync with the canonical maintained list by copying that list's body
 # verbatim on each refresh (the package names are public threat intel).
 
-LAST_REFRESHED: 2026-07-03
+LAST_REFRESHED: 2026-07-23
 
 # source: ReversingLabs — Atomic/Exodus wallet stealer
 ethers-provider2
@@ -610,3 +610,51 @@ github.com/Xpos587/git2md
 github.com/TheCodeGhinux/TaskHub
 github.com/thecodeghinux/taskhub
 github.com/the-iyed/mangomatch
+
+# source: https://socket.dev/blog/npm-pypi-campaign-typosquats-popular-secure-payment-apps — 2026-07-07
+paysafe-checkout
+paysafe-vault
+neteller
+skrill-payments
+paysafe-js
+paysafe-api
+paysafe-node
+paysafe-cards
+paysafe-fraud
+paysafe-kyc
+skrill
+skrill-sdk
+paysafe-payments
+paysafe-sdk
+
+# source: https://socket.dev/blog/malicious-go-module-exposes-github-malware-lure-network — 2026-07-08
+github.com/kaleidora/dnsub-scanning-tool
+
+# source: https://socket.dev/blog/compromised-injective-sdk-npm-package — 2026-07-09
+@injectivelabs/sdk-ts
+@injectivelabs/utils
+@injectivelabs/networks
+@injectivelabs/ts-types
+@injectivelabs/exceptions
+@injectivelabs/wallet-base
+@injectivelabs/wallet-core
+@injectivelabs/wallet-cosmos
+@injectivelabs/wallet-private-key
+@injectivelabs/wallet-evm
+@injectivelabs/wallet-trezor
+@injectivelabs/wallet-cosmostation
+@injectivelabs/wallet-ledger
+@injectivelabs/wallet-wallet-connect
+@injectivelabs/wallet-magic
+@injectivelabs/wallet-strategy
+@injectivelabs/wallet-turnkey
+@injectivelabs/wallet-cosmos-strategy
+
+# source: https://socket.dev/blog/jscrambler-supply-chain-attack — 2026-07-11
+jscrambler
+
+# source: https://socket.dev/blog/asyncapi-supply-chain-attack — 2026-07-14
+@asyncapi/generator-helpers
+@asyncapi/generator-components
+@asyncapi/generator
+@asyncapi/specs
