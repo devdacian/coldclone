@@ -17,7 +17,7 @@
 # kept in sync with the canonical maintained list by copying that list's body
 # verbatim on each refresh (the package names are public threat intel).
 
-LAST_REFRESHED: 2026-07-23
+LAST_REFRESHED: 2026-08-20
 
 # source: ReversingLabs — Atomic/Exodus wallet stealer
 ethers-provider2
@@ -658,3 +658,44 @@ jscrambler
 @asyncapi/generator-components
 @asyncapi/generator
 @asyncapi/specs
+
+# source: https://www.stepsecurity.io/blog/compromised-pypi-mrmustard-0-7-4-credential-stealer — 2026-07-24
+mrmustard
+
+# source: https://socket.dev/blog/npm-rat-targets-alibaba — 2026-07-28
+lib-mtop
+aone-kit
+aone-kit-cli
+aone-sandbox
+local-config-parser
+smart-config-manager
+cloud-config-fetcher
+fast-transform-pipeline
+aone-cloud-cli
+colder-cli
+def-open-client
+feedback-ai-sdk
+flight-compare-analyzer
+lwp-web-client
+lzd-unified-station-sdk
+open-worker-cli
+test-skill-zip
+uniapi-bridge
+
+# source: https://socket.dev/blog/joyfill-npm-beta-releases-compromised — 2026-07-28
+@joyfill/layouts
+@joyfill/components
+
+# source: https://www.stepsecurity.io/blog/chaindrop-npm-worm — 2026-08-04
+# verified full ChainDrop worm carriers; the source's larger version-specific list remains actively updated
+keyv
+flat-cache
+file-entry-cache
+cacheable-request
+@cacheable/utils
+cacheable
+@cacheable/memory
+cache-manager
+@cacheable/node-cache
+ecto
+@cacheable/net
