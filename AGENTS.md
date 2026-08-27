@@ -60,7 +60,9 @@ boundary (a throwaway VM, container, or sandbox), not a replacement for one.
 3. **Advisory WARN (tier 3)** — fuzzier, FP-prone prose injection in ordinary source
    comments / READMEs is surfaced as a prominent but non-gating (exit `0`) advisory.
 
-A scanner **crash always fails open** (no halt) — only a real detection halts.
+An individual sanitizer content-rule **crash fails open** (no injection halt) —
+only a real content detection halts. The separate IoC gate deliberately fails
+closed when its policy or lockfile coverage is invalid.
 
 ## Working on coldclone itself (contributors)
 

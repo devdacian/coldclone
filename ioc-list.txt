@@ -1,23 +1,34 @@
-# Indicators of Compromise — known-malicious package names across npm / PyPI / cargo / Go ecosystems.
+# Indicators of Compromise — known-malicious package identities across npm,
+# PyPI, crates.io, Go, Packagist, and RubyGems ecosystems.
 #
 # Consumed by ioc_scan.py (the coldclone IoC gate). A hit in any lockfile of a
 # cloned repo HALTs coldclone prep with a loud message — these are
 # confirmed-malicious package identifiers (typosquats, supply-chain compromises,
 # DPRK/Lazarus drops, infostealer campaigns), not malware-family labels.
 #
-# Format: one IoC per line in the body. Lines starting with `#` are comments and
-# preserve source attribution. Empty lines are allowed for readability.
+# Format: a plain package name is a package-wide search/family trigger. Exact
+# positive affected-version evidence uses:
+# VERSION: <ecosystem> | <package-name> | <exact-version>
+# VERSION ecosystems are limited to npm and crates.io, where the scanner has
+# trusted exact extractors. Records are additive and never claim that unlisted
+# versions are safe or that a source's affected set is complete. Malformed
+# structured records make the policy invalid and fail the scan closed.
+# Example (commented and therefore inert):
+# VERSION: npm | keyv | 6.0.0
+# Lines starting with `#` are comments and preserve source attribution. Empty
+# lines are allowed for readability.
 #
 # Provenance is load-bearing — NEVER remove existing entries. Append new entries
 # grouped by source with a `# source: URL — date` comment block, and update the
-# LAST_REFRESHED header below. ioc_scan.py warns when LAST_REFRESHED is >7 days
-# stale; refresh quarterly at minimum.
+# LAST_REFRESHED header below to the underlying threat-intelligence refresh date
+# (not a later mechanical copy date). ioc_scan.py warns when LAST_REFRESHED is
+# >7 days stale; refresh quarterly at minimum.
 #
 # This is the bundled standalone copy for the open-source coldclone tool. It is
 # kept in sync with the canonical maintained list by copying that list's body
 # verbatim on each refresh (the package names are public threat intel).
 
-LAST_REFRESHED: 2026-08-20
+LAST_REFRESHED: 2026-08-25
 
 # source: ReversingLabs — Atomic/Exodus wallet stealer
 ethers-provider2
@@ -699,3 +710,17 @@ cache-manager
 @cacheable/node-cache
 ecto
 @cacheable/net
+
+# source: https://www.stepsecurity.io/blog/chaindrop-npm-worm — 2026-08-25
+# exact affected releases disclosed for an ongoing campaign; this positive list may be incomplete
+VERSION: npm | keyv | 6.0.0
+VERSION: npm | flat-cache | 6.1.24
+VERSION: npm | file-entry-cache | 11.1.6
+VERSION: npm | cacheable-request | 13.0.20
+VERSION: npm | @cacheable/utils | 2.5.1
+VERSION: npm | cacheable | 2.5.1
+VERSION: npm | @cacheable/memory | 2.2.1
+VERSION: npm | cache-manager | 7.2.10
+VERSION: npm | @cacheable/node-cache | 3.1.2
+VERSION: npm | ecto | 5.0.1
+VERSION: npm | @cacheable/net | 2.1.1

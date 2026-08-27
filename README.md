@@ -16,11 +16,23 @@ virtual machine, container, or sandbox), not a replacement for one.
   Trojan-Source filename codepoints; emits non-gating content warnings over the
   files it must leave live so you can read scope.
 - **`ioc_scan.py`** — a known-malicious-dependency tripwire that greps lockfiles
-  (npm / PyPI / cargo / Go / …) against a maintained indicator list. Read-only;
-  no install, no execution.
+  (npm / PyPI / cargo / Go / …) against a maintained indicator list. It reports
+  trusted exact affected-version evidence for npm-family and Cargo lockfiles
+  when available, while preserving conservative package-wide hits. Read-only;
+  no install, no execution, no network or OSV dependency.
 - **`coldclone.sh`** — orchestrates a hardened clone (symlinks off, LFS filters
   neutralized, dangerous transports blocked, pinned + path-validated submodules)
   then the `scan` + `sanitize` steps.
+
+Plain entries in `ioc-list.txt` remain package-wide triggers. Structured
+`VERSION: <ecosystem> | <package> | <exact-version>` records are additive
+positive evidence: a trusted exact intersection produces a more precise alert,
+but an unlisted, ambiguous, unsupported, or source-untrusted version still falls
+back to the plain-name halt because disclosed affected-version sets can be
+incomplete. Exact extraction is closed to package-lock, Yarn Classic, pnpm
+records with an authoritative npm-registry tarball, and Cargo. Yarn Berry's
+registry-configurable `npm:` locators remain name-only; policy syntax errors
+fail the IoC gate closed.
 
 ## Install as an agent plugin
 
@@ -75,7 +87,9 @@ tiers:
    source comments / READMEs is surfaced as a prominent (but non-gating, exit `0`)
    advisory, so it can't be silently scrolled past but won't brick the run.
 
-A scanner crash always fails **open** (no halt) — only a real detection halts.
+An individual sanitizer content-rule crash fails **open** (no injection halt) —
+only a real content detection halts. The separate IoC gate deliberately fails
+closed when its policy or lockfile coverage is invalid.
 The category taxonomy is credited in [PRIOR-ART.md](PRIOR-ART.md).
 
 ## Using it from your coding agent

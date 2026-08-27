@@ -331,7 +331,7 @@ cmd_scan() {
   case "$rc" in
     0|1) ;;  # no malicious dependency found (1 = clean-but-stale-list warning); proceed
     2) die "REFUSE: $repo declares a KNOWN-MALICIOUS dependency (see above). Treat the repo as hostile. It has NOT been moved into any isolation environment; inspect it only inside your isolation environment if you consciously choose to." ;;
-    3) die2 "REFUSE: the IoC gate could NOT run on $repo (see above — IoC list missing/unreadable or bad path). Failing CLOSED: fix the gate before proceeding. The repo has NOT been moved into any isolation environment." ;;
+    3) die2 "REFUSE: the IoC gate could NOT run on $repo (see the scanner diagnostic above for the specific cause). Failing CLOSED: fix the gate before proceeding. The repo has NOT been moved into any isolation environment." ;;
     *) die "scan errored (exit $rc) on $repo" ;;
   esac
 }
