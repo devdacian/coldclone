@@ -191,6 +191,55 @@ three deliberate differences:
   this host — a hand-extracted archive that ships forged git metadata must be
   `sanitize-folder`'d first (which quarantines that `.git`).
 
+## IoC scan (dependency screening only)
+
+Sometimes you only want the known-malicious-dependency tripwire — screening a lockfile
+you already have, re-checking a tree after an `ioc-list.txt` refresh — without the
+quarantine pass. The scan is a standalone step on an existing directory; it runs no
+fetch and no sanitize.
+
+**Directly:**
+
+```sh
+# via the orchestrator (recommended) — surfaces a hit as a loud refusal
+./coldclone.sh scan ./acme-contracts
+
+# or the script directly, for raw exit codes and its flags
+./ioc_scan.py ./acme-contracts
+./ioc_scan.py --offline ./acme-contracts            # no OSV network lookups
+./ioc_scan.py --ioc-list ./my-ioc-list.txt ./acme-contracts
+```
+
+Exit codes differ between the two entry points, because the wrapper remaps them onto
+coldclone's own scheme:
+
+| | clean | clean, list stale | known-malicious dependency | gate could not run |
+|---|---|---|---|---|
+| `coldclone.sh scan` | `0` | `0` (warns) | `1` (refusal) | `2` (fail-closed) |
+| `ioc_scan.py` | `0` | `1` | `2` | `3` |
+
+A stale list (no valid `LAST_REFRESHED` header, or older than 7 days) is a
+non-gating warning: the wrapper passes it through as `0`, so refresh `ioc-list.txt`
+when you see it rather than trusting a quiet clean.
+
+`./coldclone.sh ioc <dir>` is a back-compat alias for `scan`.
+
+There is no fetch-plus-scan-only command — `prep` is fetch → scan → sanitize — so to
+screen a remote repo without sanitizing it, run the two steps yourself:
+
+```sh
+./coldclone.sh fetch <git-url>
+./coldclone.sh scan ~/coldclone-scratch/<repo>
+```
+
+(`~/coldclone-scratch` is the default parent; `fetch` prints the actual path, and it is
+overridable with a `scratch-parent` argument or `COLDCLONE_SCRATCH`.)
+
+Both forms are read-only greps over lockfiles and manifests — no install, no execution —
+so they are safe on an unsanitized tree. **But a clean scan is not an inert tree.** `scan`
+neutralizes nothing: editor tasks, agent configs, and git hooks are all still live. Don't
+open the tree on the strength of a clean IoC scan alone — run `sanitize` first.
+
 ## Improving coldclone itself (it's built using Touchstone)
 
 Coldclone is developed using [Touchstone](https://github.com/devdacian/touchstone) — an
