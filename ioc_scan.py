@@ -3,10 +3,13 @@
 
 Greps every discoverable lockfile in a freshly cloned untrusted repo for any
 package identity on the bundled IoC list (`ioc-list.txt` next to this script).
-Plain entries are conservative package-wide triggers. Structured VERSION records
-add exact positive evidence for disclosed compromised releases; because those
-records may be incomplete, an unlisted or unparseable version never clears a
-plain-name hit.
+Plain entries are package-wide triggers for identities whose entire release
+family is malicious (for example, typosquats). Structured VERSION records turn
+an identity into an exact malicious-version denylist: a trusted exact version
+not in that denylist is locally safe. When enabled, an exact OSV query can add a
+malicious version that has not yet reached the bundled list. Unparseable or
+structurally ambiguous version evidence cannot establish a safe version and
+still halts.
 
 This runs FIRST in the coldclone flow, on the HOST, right after the hardened
 clone and BEFORE sanitize + moving the tree into an isolation environment:
@@ -17,22 +20,24 @@ clone and BEFORE sanitize + moving the tree into an isolation environment:
     whether to treat the repo as hostile or to examine it deliberately inside
     their isolation environment.
 
-This is an identity-exact denylist (high precision via exact identity matching;
-it catches only KNOWN drops, and its few residual false positives fail SAFE —
-see the accepted limitation below). Trusted exact-version evidence is extracted
-locally from npm-family and Cargo lockfiles without OSV or network access. It
-complements — never replaces — the auto-execution sanitizer
+This is an identity-and-version-exact denylist (high precision via exact
+matching; it catches only KNOWN drops, and its few residual false positives fail
+SAFE — see the accepted limitation below). Trusted exact-version evidence is
+extracted locally from npm-family and Cargo lockfiles. By default the scanner
+also makes opportunistic exact-version OSV API queries for version-scoped
+packages; `--offline` disables those queries. It complements — never replaces —
+the auto-execution sanitizer
 (`sanitize_repo.py`) and the isolation boundary.
 
 Exit codes: 0 clean, 1 IoC-list stale (>7 days) but no hit, 2 IoC hit (HALT),
 3 config error — the gate could not actually run, so FAIL CLOSED and HALT:
 IoC list missing / unreadable / EMPTY / invalid, a discovered lockfile that
-could not be scanned (unreadable, or a symlink we refuse to follow), or a bad
-repo path. Only 0 and 1 mean "no malicious dependency found — proceed" (1 also
+could not be scanned (unreadable, oversized, malformed structured data, or a
+symlink we refuse to follow), or a bad repo path. Only 0 and 1 mean "no malicious dependency found — proceed" (1 also
 flags a stale or header-less list). A repo with simply no lockfiles is
 legitimately clean -> 0.
 
-Usage: python3 ioc_scan.py <repo-dir> [--ioc-list <path>]
+Usage: python3 ioc_scan.py <repo-dir> [--ioc-list <path>] [--offline]
 
 Known limitation (accepted): plain package entries are not tagged by ecosystem,
 so a slash-delimited path component (e.g. a go.sum module owner
@@ -41,9 +46,10 @@ list. A benign module whose owner equals an npm/PyPI IoC name can therefore
 false-HALT. This fails SAFE (a HALT sends it to human review, never a miss) and
 the alternative — matching only the last path component — would instead MISS go
 modules whose package is not the last component (e.g. a `/v2` major-version
-suffix), which is worse for a tripwire. VERSION ecosystem tags scope only exact
-positive evidence and diagnostics; they do not narrow this conservative
-plain-name halt rule.
+suffix), which is worse for a tripwire. Structured ecosystem tags scope exact
+version evidence. A trusted exact version outside the recorded malicious set is
+safe; legacy AFFECTED_SET_COMPLETE records are accepted as provenance but are
+not needed to make that decision.
 
 Bundled with the open-source coldclone tool; self-contained (no external deps).
 """
@@ -55,7 +61,8 @@ import json
 import os
 import re
 import sys
-import urllib.parse
+import urllib.error
+import urllib.request
 from dataclasses import dataclass, field, replace
 from datetime import date
 from pathlib import Path
@@ -112,6 +119,54 @@ _SKIP_DIRS = frozenset({
 })
 
 _STALE_DAYS = 7
+_OSV_API = "https://api.osv.dev/v1/query"
+_OSV_TIMEOUT_SECONDS = 5
+_OSV_RESPONSE_LIMIT = 4 * 1024 * 1024
+_OSV_QUERY_LIMIT = 10
+_LOCKFILE_SIZE_LIMIT = 8 * 1024 * 1024
+_LOCKFILE_TOTAL_SIZE_LIMIT = 64 * 1024 * 1024
+_LOCKFILE_COUNT_LIMIT = 1024
+_DISCOVERY_ENTRY_LIMIT = 100_000
+_VERSION_EXTRACTION_LIMIT_PER_LOCKFILE = 16
+_YARN_BERRY_METADATA_VERSIONS = frozenset({"6", "8", "9"})
+_OSV_MARKER_NODE_LIMIT = 100_000
+_JSON_LOCKFILES = frozenset({
+    "package-lock.json", "Pipfile.lock", "composer.lock",
+})
+_YAML_LOCKFILES = frozenset({"yarn.lock", "pnpm-lock.yaml"})
+_YAML_IDENTITY_ESCAPE_RE = re.compile(
+    r'"[^"\n]*\\(?:x[0-9A-Fa-f]{2}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8})'
+)
+_CARGO_PACKAGE_HEADER_RE = re.compile(
+    r"^[ \t]*\[\[[ \t]*package[ \t]*\]\][ \t]*(?:#.*)?$"
+)
+_CARGO_TABLE_HEADER_RE = re.compile(
+    r"^[ \t]*(?:"
+    r"\[[ \t]*[A-Za-z0-9_-]+(?:[ \t]*\.[ \t]*[A-Za-z0-9_-]+)*[ \t]*\]"
+    r"|\[\[[ \t]*[A-Za-z0-9_-]+(?:[ \t]*\.[ \t]*[A-Za-z0-9_-]+)*[ \t]*\]\]"
+    r")[ \t]*(?:#.*)?$"
+)
+_CARGO_IDENTITY_ASSIGNMENT_RE = re.compile(
+    r"^[ \t]*(name|version)[ \t]*=[ \t]*(?:\"([^\"\\]*)\"|'([^']*)')"
+    r"[ \t]*(?:#.*)?$"
+)
+_CARGO_QUOTED_KEY_RE = re.compile(
+    r'''^(?:"[^"\n]*"|'[^'\n]*')[ \t]*='''
+)
+_CARGO_IDENTITY_LIKE_RE = re.compile(
+    r"^\s*(?:name|version)(?=\s|=)"
+)
+_CARGO_INVALID_LINE_BREAK_RE = re.compile(
+    r"[\v\f\x1c-\x1e\x85\u2028\u2029]|\r(?!\n)"
+)
+_SEMVER_IDENTIFIER = r"(?:0|[1-9][0-9]*|[0-9]*[A-Za-z-][0-9A-Za-z-]*)"
+_EXACT_SEMVER_RE = re.compile(
+    r"(?:0|[1-9][0-9]*)\."
+    r"(?:0|[1-9][0-9]*)\."
+    r"(?:0|[1-9][0-9]*)"
+    rf"(?:-{_SEMVER_IDENTIFIER}(?:\.{_SEMVER_IDENTIFIER})*)?"
+    r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
+)
 
 
 @dataclass
@@ -121,6 +176,7 @@ class IocEntry:
     version_evidence: dict[str, tuple[tuple[str, int], ...]] = field(
         default_factory=dict
     )
+    affected_set_complete: dict[str, int] = field(default_factory=dict)
 
 
 @dataclass
@@ -136,12 +192,21 @@ class IocHit:
         default_factory=dict
     )
     whole_file_kind: str | None = None
+    affected_set_complete: dict[str, int] = field(default_factory=dict)
+    lockfile_text: str | None = field(default=None, repr=False, compare=False)
 
 
 @dataclass(frozen=True)
 class LockfilePackageVersions:
     versions: tuple[str, ...] = ()
     mixed_or_untrusted: bool = False
+
+
+@dataclass
+class OsvApiClassification:
+    status: str  # success | failed
+    vulns: list[dict] = field(default_factory=list)
+    diagnostic: str = ""
 
 
 class IocListError(ValueError):
@@ -152,8 +217,10 @@ def load_ioc_list(path: Path) -> tuple[dict[str, IocEntry], int | None]:
     """Parse the IoC policy. Returns (ioc_map, stale_days_or_none).
 
     `stale_days` is days since the `LAST_REFRESHED: YYYY-MM-DD` header, or None
-    if absent/malformed. VERSION records are additive exact positive evidence;
-    every one must have a corresponding plain package entry.
+    if absent/malformed. VERSION records form an exact malicious-release set;
+    every one must have a corresponding plain package entry. Legacy
+    AFFECTED_SET_COMPLETE records are validated and retained as provenance but
+    do not affect classification.
     """
     if not path.is_file():
         raise IocListError(f"IoC list not found at {path}")
@@ -163,7 +230,7 @@ def load_ioc_list(path: Path) -> tuple[dict[str, IocEntry], int | None]:
         raise IocListError(f"cannot read IoC list {path}: {exc}") from exc
 
     iocs: dict[str, IocEntry] = {}
-    version_records: list[tuple[int, str, str, str]] = []
+    policy_records: list[tuple[int, str, str, str, str | None]] = []
     last_refreshed: str | None = None
     for line_no, line in enumerate(lines, start=1):
         stripped = line.strip()
@@ -187,38 +254,86 @@ def load_ioc_list(path: Path) -> tuple[dict[str, IocEntry], int | None]:
                 )
             if (
                 not _is_policy_package_identity(package)
-                or not _is_exact_registry_version(version)
+                or not _is_exact_registry_version(version, ecosystem)
             ):
                 raise IocListError(
                     f"line {line_no}: invalid VERSION package/version"
                 )
-            version_records.append((line_no, ecosystem, package, version))
+            policy_records.append(
+                (line_no, "version", ecosystem, package, version)
+            )
             continue
         if re.match(r"^VERSION(?:\s|$)", stripped):
             raise IocListError(
                 f"line {line_no}: malformed reserved VERSION record"
             )
+        if stripped.startswith("AFFECTED_SET_COMPLETE:"):
+            fields = [
+                part.strip()
+                for part in stripped[len("AFFECTED_SET_COMPLETE:"):].split("|")
+            ]
+            if len(fields) != 2 or any(not field for field in fields):
+                raise IocListError(
+                    f"line {line_no}: malformed AFFECTED_SET_COMPLETE record"
+                )
+            ecosystem, package = fields
+            if ecosystem not in _IOC_VERSION_ECOSYSTEMS:
+                raise IocListError(
+                    f"line {line_no}: AFFECTED_SET_COMPLETE ecosystem "
+                    f"{ecosystem!r} has no trusted exact extractor"
+                )
+            if not _is_policy_package_identity(package):
+                raise IocListError(
+                    f"line {line_no}: invalid AFFECTED_SET_COMPLETE package"
+                )
+            policy_records.append(
+                (line_no, "complete", ecosystem, package, None)
+            )
+            continue
+        if re.match(r"^AFFECTED_SET_COMPLETE(?:\s|$)", stripped):
+            raise IocListError(
+                f"line {line_no}: malformed reserved "
+                "AFFECTED_SET_COMPLETE record"
+            )
         if "|" in stripped:
             raise IocListError(
                 f"line {line_no}: unexpected pipe in IoC policy record"
             )
+        if not _is_plain_policy_identity(stripped):
+            raise IocListError(
+                f"line {line_no}: invalid plain package identity"
+            )
         iocs.setdefault(stripped, IocEntry(name=stripped, line_no=line_no))
 
     by_package: dict[str, dict[str, dict[str, int]]] = {}
-    for line_no, ecosystem, package, version in version_records:
+    active_complete: dict[tuple[str, str], int] = {}
+    for line_no, kind, ecosystem, package, version in policy_records:
         if package not in iocs:
             raise IocListError(
-                f"line {line_no}: VERSION record for {package!r} has no plain "
-                "package entry"
+                f"line {line_no}: {kind.upper()} record for {package!r} has "
+                "no plain package entry"
             )
-        by_package.setdefault(package, {}).setdefault(ecosystem, {}).setdefault(
-            version, line_no
-        )
+        versions = by_package.setdefault(package, {}).setdefault(ecosystem, {})
+        key = (package, ecosystem)
+        if kind == "version":
+            assert version is not None
+            if version not in versions:
+                versions[version] = line_no
+                active_complete.pop(key, None)
+            continue
+        if not versions:
+            raise IocListError(
+                f"line {line_no}: AFFECTED_SET_COMPLETE for {package!r} "
+                "has no earlier distinct VERSION record"
+            )
+        active_complete[key] = line_no
     for package, ecosystems in by_package.items():
         iocs[package].version_evidence = {
             ecosystem: tuple(sorted(versions.items(), key=lambda item: item[1]))
             for ecosystem, versions in ecosystems.items()
         }
+    for (package, ecosystem), line_no in active_complete.items():
+        iocs[package].affected_set_complete[ecosystem] = line_no
 
     stale_days: int | None = None
     if last_refreshed:
@@ -232,7 +347,8 @@ def load_ioc_list(path: Path) -> tuple[dict[str, IocEntry], int | None]:
 
 def discover_lockfiles(root: Path) -> tuple[list[Path], list[Path], list[Path]]:
     """Discover lockfiles under `root`, skipping installed-artifact dirs and not
-    following symlinks (os.walk does not follow symlinked dirs by default).
+    following symlinks. Entries are consumed lazily so a single hostile giant
+    directory cannot be materialized before the global discovery bound applies.
     Returns (regular, symlinked, traversal_errors): a lockfile that is itself a
     SYMLINK is NOT read (following it could be unsafe/exfil) but is also NOT
     silently dropped. Directory traversal errors are likewise retained so the
@@ -242,16 +358,60 @@ def discover_lockfiles(root: Path) -> tuple[list[Path], list[Path], list[Path]]:
     found: list[Path] = []
     symlinked: list[Path] = []
     traversal_errors: list[Path] = []
+    entries_seen = 0
 
-    def onerror(exc: OSError) -> None:
-        traversal_errors.append(Path(exc.filename) if exc.filename else root)
+    def limit_error(kind: str) -> Path:
+        return root / f".coldclone-{kind}-limit-exceeded"
 
-    for dirpath, dirnames, filenames in os.walk(root, onerror=onerror):
-        dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS]
-        for name in filenames:
-            if name in _LOCKFILE_NAMES:
-                p = Path(dirpath) / name
-                (symlinked if p.is_symlink() else found).append(p)
+    pending = [root]
+    while pending:
+        directory = pending.pop()
+        try:
+            iterator_context = os.scandir(directory)
+            with iterator_context as iterator:
+                for entry in iterator:
+                    entries_seen += 1
+                    if entries_seen >= _DISCOVERY_ENTRY_LIMIT:
+                        traversal_errors.append(limit_error("entry"))
+                        return sorted(found), sorted(symlinked), sorted(
+                            set(traversal_errors)
+                        )
+                    path = Path(entry.path)
+                    try:
+                        is_symlink = entry.is_symlink()
+                        if is_symlink:
+                            is_directory = entry.is_dir(follow_symlinks=True)
+                            if is_directory and entry.name in _SKIP_DIRS:
+                                continue
+                            if is_directory or entry.name in _LOCKFILE_NAMES:
+                                if len(found) + len(symlinked) >= _LOCKFILE_COUNT_LIMIT:
+                                    traversal_errors.append(limit_error("lockfile"))
+                                    return sorted(found), sorted(symlinked), sorted(
+                                        set(traversal_errors)
+                                    )
+                                symlinked.append(path)
+                            continue
+                        if entry.is_dir(follow_symlinks=False):
+                            if entry.name not in _SKIP_DIRS:
+                                pending.append(path)
+                            continue
+                        if entry.name not in _LOCKFILE_NAMES:
+                            continue
+                        if not entry.is_file(follow_symlinks=False):
+                            traversal_errors.append(path)
+                            continue
+                        if len(found) + len(symlinked) >= _LOCKFILE_COUNT_LIMIT:
+                            traversal_errors.append(limit_error("lockfile"))
+                            return sorted(found), sorted(symlinked), sorted(
+                                set(traversal_errors)
+                            )
+                        found.append(path)
+                    except OSError:
+                        traversal_errors.append(path)
+        except OSError as exc:
+            traversal_errors.append(
+                Path(exc.filename) if exc.filename else directory
+            )
     return sorted(found), sorted(symlinked), sorted(set(traversal_errors))
 
 
@@ -314,18 +474,20 @@ def _candidates(token: str):
                 i += 1
 
 
-def _is_exact_registry_version(version: str) -> bool:
-    """Return true for a bounded exact registry version, not a range/alias/URL."""
+def _is_exact_registry_version(
+    version: str, ecosystem: str | None = None
+) -> bool:
+    """Return true only for a canonical exact SemVer registry release.
+
+    npm and crates.io both use SemVer release identities. Requiring the full
+    three-part form prevents a malformed policy typo from silently turning an
+    identity into a version-scoped allow-by-default rule.
+    """
+    if ecosystem not in (None, "npm", "crates.io"):
+        return False
     if not version or len(version) > 128:
         return False
-    lowered = version.lower()
-    if any(token in lowered for token in (":", "/", "\\", " ", "*")):
-        return False
-    if lowered.startswith(
-        ("^", "~", ">", "<", "=", "workspace", "file", "link", "git", "npm")
-    ):
-        return False
-    return re.fullmatch(r"[0-9][0-9A-Za-z.+_-]*", version) is not None
+    return _EXACT_SEMVER_RE.fullmatch(version) is not None
 
 
 def _is_policy_package_identity(package: str) -> bool:
@@ -335,56 +497,37 @@ def _is_policy_package_identity(package: str) -> bool:
     ) is not None
 
 
-def _registry_url_package_matches(
-    value: object, package: str, version: str, hosts: tuple[str, ...]
-) -> bool:
-    if not isinstance(value, str) or not value:
+def _is_plain_policy_identity(package: str) -> bool:
+    """Validate bounded cross-ecosystem identities accepted as plain records."""
+    if not package or len(package) > 256:
         return False
-    try:
-        parsed = urllib.parse.urlparse(value)
-    except ValueError:
-        return False
-    if parsed.scheme != "https" or parsed.netloc.lower() not in hosts:
-        return False
-    parts = [
-        part for part in urllib.parse.unquote(parsed.path).split("/") if part
-    ]
-    if package.startswith("@"):
-        if not (
-            len(parts) >= 4
-            and "/".join(parts[:2]) == package
-            and parts[2] == "-"
-        ):
-            return False
-        basename = parts[3]
-        package_basename = package.split("/", 1)[1]
-    else:
-        if not (len(parts) >= 3 and parts[0] == package and parts[1] == "-"):
-            return False
-        basename = parts[2]
-        package_basename = package
-    return basename == f"{package_basename}-{version}.tgz"
+    return re.fullmatch(
+        r"(?:"
+        r"@[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+"
+        r"|[A-Za-z0-9][A-Za-z0-9_.-]*"
+        r"|[A-Za-z0-9][A-Za-z0-9_.-]*(?:/[A-Za-z0-9][A-Za-z0-9_.@+-]*)+"
+        r")",
+        package,
+    ) is not None
 
 
-def _is_npm_registry_resolved(value: object, package: str, version: str) -> bool:
-    return _registry_url_package_matches(
-        value, package, version, ("registry.npmjs.org",)
-    )
-
-
-def _has_integrity(value: object) -> bool:
-    return isinstance(value, str) and bool(value.strip())
-
-
-def _is_cargo_registry_source(value: str | None) -> bool:
-    return isinstance(value, str) and value in (
-        "registry+https://github.com/rust-lang/crates.io-index",
-        "sparse+https://index.crates.io/",
-    )
+def _npm_alias_target(value: object) -> tuple[str, str | None] | None:
+    """Return (target, exact-version-or-None) for an npm alias specifier."""
+    if not isinstance(value, str) or not value.startswith("npm:"):
+        return None
+    target_with_range = value[len("npm:"):]
+    split_at = target_with_range.rfind("@")
+    if split_at <= 0:
+        return None
+    target = target_with_range[:split_at]
+    version = target_with_range[split_at + 1:]
+    if not _is_policy_package_identity(target) or not version:
+        return None
+    return target, version if _is_exact_registry_version(version) else None
 
 
 def _extract_package_lock_version_info(
-    lockfile: Path, package: str
+    lockfile: Path, package: str, text: str | None = None
 ) -> LockfilePackageVersions:
     duplicate_key = False
 
@@ -398,33 +541,42 @@ def _extract_package_lock_version_info(
         return result
 
     try:
+        if text is None:
+            text = lockfile.read_text(encoding="utf-8", errors="strict")
         data = json.loads(
-            lockfile.read_text(encoding="utf-8", errors="strict"),
+            text,
             object_pairs_hook=object_pairs,
         )
     except (OSError, UnicodeError, ValueError, RecursionError):
         return LockfilePackageVersions(mixed_or_untrusted=True)
     versions: set[str] = set()
     untrusted = duplicate_key
+    alias_referenced = False
+    alias_resolved = False
 
-    def consider(value: object) -> None:
-        nonlocal untrusted
+    def consider(value: object, *, alias_version: str | None = None) -> None:
+        nonlocal untrusted, alias_resolved
         if not isinstance(value, dict):
             untrusted = True
             return
-        version = value.get("version")
+        version = alias_version if alias_version is not None else value.get("version")
         if isinstance(version, str) and _is_exact_registry_version(version):
             versions.add(version)
-            if not (
-                _is_npm_registry_resolved(value.get("resolved"), package, version)
-                and _has_integrity(value.get("integrity"))
-            ):
-                untrusted = True
+            if alias_version is not None:
+                alias_resolved = True
         else:
             untrusted = True
 
+    def alias_for(value: object) -> str | None:
+        nonlocal alias_referenced
+        parsed = _npm_alias_target(value)
+        if parsed is None or parsed[0] != package:
+            return None
+        alias_referenced = True
+        return parsed[1]
+
     def scan_packages(packages: object) -> None:
-        nonlocal untrusted
+        nonlocal untrusted, alias_referenced, alias_resolved
         if not isinstance(packages, dict):
             untrusted = True
             return
@@ -434,6 +586,23 @@ def _extract_package_lock_version_info(
                 f"/node_modules/{package}"
             ):
                 consider(value)
+                continue
+            if not isinstance(value, dict) or _NM_MARKER not in normalized:
+                continue
+            # npm aliases are installed under the alias location, while either
+            # the record's `name` or its `npm:<target>@<version>` value carries
+            # the actual registry identity.
+            if value.get("name") == package:
+                alias_referenced = True
+                version = value.get("version")
+                if isinstance(version, str) and _is_exact_registry_version(version):
+                    versions.add(version)
+                    alias_resolved = True
+                else:
+                    untrusted = True
+            alias_version = alias_for(value.get("version"))
+            if alias_version is not None:
+                consider(value, alias_version=alias_version)
 
     def scan_dependencies(dependencies: object) -> None:
         nonlocal untrusted
@@ -446,14 +615,32 @@ def _extract_package_lock_version_info(
             if package in deps:
                 consider(deps.get(package))
             for value in deps.values():
+                if isinstance(value, dict):
+                    alias_version = alias_for(value.get("version"))
+                    if alias_version is not None:
+                        consider(value, alias_version=alias_version)
                 if isinstance(value, dict) and isinstance(
                     value.get("dependencies"), dict
                 ):
                     stack.append(value["dependencies"])
 
+    def scan_alias_references(root: object) -> None:
+        """Notice alias declarations even when their install record is absent."""
+        stack = [root]
+        while stack:
+            value = stack.pop()
+            if isinstance(value, dict):
+                stack.extend(value.keys())
+                stack.extend(value.values())
+            elif isinstance(value, list):
+                stack.extend(value)
+            else:
+                alias_for(value)
+
     if not isinstance(data, dict):
         untrusted = True
     else:
+        scan_alias_references(data)
         lockfile_version = data.get("lockfileVersion")
         if type(lockfile_version) is not int or lockfile_version not in (1, 2, 3):
             untrusted = True
@@ -468,6 +655,8 @@ def _extract_package_lock_version_info(
             scan_packages(data.get("packages"))
             if "dependencies" in data:
                 untrusted = True
+    if alias_referenced and not alias_resolved:
+        untrusted = True
     return LockfilePackageVersions(
         versions=tuple(sorted(versions)), mixed_or_untrusted=untrusted
     )
@@ -517,22 +706,10 @@ def _extract_yarn_classic_version_info(
         )
         prefix = re.escape(" " * direct_indent)
         version_re = re.compile(prefix + r'version\s+"([^"]+)"\s*$')
-        resolved_re = re.compile(prefix + r'resolved\s+"([^"]+)"\s*$')
-        integrity_re = re.compile(prefix + r'integrity\s+(\S.*?)\s*$')
         version_values = [
             match.group(1) for line in body if (match := version_re.fullmatch(line))
         ]
-        resolved_values = [
-            match.group(1) for line in body if (match := resolved_re.fullmatch(line))
-        ]
-        integrity_values = [
-            match.group(1) for line in body if (match := integrity_re.fullmatch(line))
-        ]
-        if (
-            len(version_values) != 1
-            or len(resolved_values) != 1
-            or len(integrity_values) != 1
-        ):
+        if len(version_values) != 1:
             untrusted = True
             for version in version_values:
                 if _is_exact_registry_version(version):
@@ -541,13 +718,6 @@ def _extract_yarn_classic_version_info(
         version = version_values[0]
         if _is_exact_registry_version(version):
             versions.add(version)
-            if not _registry_url_package_matches(
-                resolved_values[0],
-                package,
-                version,
-                ("registry.npmjs.org", "registry.yarnpkg.com"),
-            ):
-                untrusted = True
         else:
             untrusted = True
     return LockfilePackageVersions(
@@ -766,10 +936,12 @@ def _extract_yarn_berry_version_info(
 
 
 def _extract_yarn_lock_version_info(
-    lockfile: Path, package: str
+    lockfile: Path, package: str, text: str | None = None
 ) -> LockfilePackageVersions:
     try:
-        lines = lockfile.read_text(encoding="utf-8", errors="strict").splitlines()
+        if text is None:
+            text = lockfile.read_text(encoding="utf-8", errors="strict")
+        lines = text.splitlines()
     except (OSError, UnicodeError):
         return LockfilePackageVersions(mixed_or_untrusted=True)
     metadata_key_re = re.compile(
@@ -787,15 +959,16 @@ def _extract_yarn_lock_version_info(
     if len(metadata) != 1:
         return LockfilePackageVersions(mixed_or_untrusted=True)
     metadata_versions = _yarn_direct_raw_scalars(metadata[0][1], "version")
-    if len(metadata_versions) != 1 or metadata_versions[0] != "8":
+    if (
+        len(metadata_versions) != 1
+        or metadata_versions[0] not in _YARN_BERRY_METADATA_VERSIONS
+    ):
         return LockfilePackageVersions(mixed_or_untrusted=True)
-    # A Berry `package@npm:version` locator identifies the resolver protocol,
-    # but not the configured registry host. Preserve the parsed versions for
-    # diagnostics while refusing to call them authoritative exact evidence.
-    return replace(
-        _extract_yarn_berry_version_info(blocks, package),
-        mixed_or_untrusted=True,
-    )
+    # Berry's exact `package@npm:version` locator is the dependency identity we
+    # compare with registry-version advisories. The parser above rejects
+    # duplicate, malformed, ambiguous, and incompatible patch records before a
+    # locator can be treated as exact.
+    return _extract_yarn_berry_version_info(blocks, package)
 
 
 @dataclass(frozen=True)
@@ -811,6 +984,7 @@ class _YamlMappingIndex:
     nodes: tuple[_YamlMappingNode, ...]
     roots: tuple[int, ...]
     children: Mapping[int, tuple[int, ...]]
+    unsupported_structure: bool = False
 
 
 def _yaml_mapping_index(lines: list[str]) -> _YamlMappingIndex:
@@ -819,28 +993,44 @@ def _yaml_mapping_index(lines: list[str]) -> _YamlMappingIndex:
     roots: list[int] = []
     mutable_children: dict[int, list[int]] = {}
     stack: list[int] = []
+    unsupported_structure = False
 
     for line in lines:
-        if not line.strip() or line.lstrip().startswith(("#", "- ")):
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        if "\t" in line[:len(line) - len(line.lstrip())]:
+            unsupported_structure = True
             continue
         indent = len(line) - len(line.lstrip(" "))
         content = line[indent:].rstrip()
+        while stack and nodes[stack[-1]].indent >= indent:
+            stack.pop()
+        parent = stack[-1] if stack else None
+        structural_parents = {
+            "packages", "snapshots", "importers", "dependencies",
+            "devDependencies", "optionalDependencies",
+        }
+        if content.startswith("- "):
+            if parent is None or nodes[parent].key in structural_parents:
+                unsupported_structure = True
+            continue
         if content[:1] in {"'", '"'}:
             quote = content[0]
             closing = content.find(quote, 1)
             if closing < 0 or not content[closing + 1:].lstrip().startswith(":"):
+                unsupported_structure = True
                 continue
             key = content[1:closing]
             value = content[closing + 1:].lstrip()[1:].strip()
         else:
             if ":" not in content:
+                if parent is None or nodes[parent].key in structural_parents:
+                    unsupported_structure = True
                 continue
             key, value = (part.strip() for part in content.split(":", 1))
         if not key:
+            unsupported_structure = True
             continue
-        while stack and nodes[stack[-1]].indent >= indent:
-            stack.pop()
-        parent = stack[-1] if stack else None
         idx = len(nodes)
         nodes.append(_YamlMappingNode(key, value, indent, parent))
         if parent is None:
@@ -853,6 +1043,7 @@ def _yaml_mapping_index(lines: list[str]) -> _YamlMappingIndex:
         nodes=tuple(nodes),
         roots=tuple(roots),
         children={key: tuple(value) for key, value in mutable_children.items()},
+        unsupported_structure=unsupported_structure,
     )
 
 
@@ -871,42 +1062,6 @@ def _yaml_has_duplicate_child_keys(index: _YamlMappingIndex, parent: int) -> boo
     return len(keys) != len(set(keys))
 
 
-def _pnpm_inline_map_values(raw: str, key: str) -> list[str]:
-    if not (raw.startswith("{") and raw.endswith("}")):
-        return []
-    inner = raw[1:-1]
-    pattern = re.compile(r"(?:^|,)\s*" + re.escape(key) + r":\s*([^,}]*)")
-    return [match.group(1).strip().strip("'\"") for match in pattern.finditer(inner)]
-
-
-def _pnpm_block_is_registry_backed(
-    index: _YamlMappingIndex, start_idx: int, package: str, version: str
-) -> bool:
-    resolutions = _yaml_child_values(index, start_idx, "resolution")
-    if len(resolutions) != 1:
-        return False
-    resolution_idx, raw = resolutions[0]
-    if raw:
-        integrities = _pnpm_inline_map_values(raw, "integrity")
-        tarballs = _pnpm_inline_map_values(raw, "tarball")
-    else:
-        integrities = [
-            value.strip().strip("'\"")
-            for _idx, value in _yaml_child_values(index, resolution_idx, "integrity")
-        ]
-        tarballs = [
-            value.strip().strip("'\"")
-            for _idx, value in _yaml_child_values(index, resolution_idx, "tarball")
-        ]
-    if len(integrities) != 1 or not integrities[0]:
-        return False
-    if len(tarballs) != 1 or not tarballs[0]:
-        return False
-    return _registry_url_package_matches(
-        tarballs[0], package, version, ("registry.npmjs.org",)
-    )
-
-
 def _pnpm_specifier_is_registry_like(specifier: str | None) -> bool:
     if specifier is None:
         return False
@@ -919,10 +1074,12 @@ def _pnpm_specifier_is_registry_like(specifier: str | None) -> bool:
 
 
 def _extract_pnpm_lock_version_info(
-    lockfile: Path, package: str
+    lockfile: Path, package: str, text: str | None = None
 ) -> LockfilePackageVersions:
     try:
-        lines = lockfile.read_text(encoding="utf-8", errors="strict").splitlines()
+        if text is None:
+            text = lockfile.read_text(encoding="utf-8", errors="strict")
+        lines = text.splitlines()
     except (OSError, UnicodeError):
         return LockfilePackageVersions(mixed_or_untrusted=True)
     index = _yaml_mapping_index(lines)
@@ -939,7 +1096,9 @@ def _extract_pnpm_lock_version_info(
         return LockfilePackageVersions(mixed_or_untrusted=True)
 
     versions: set[str] = set()
-    untrusted = len(index.roots) != len(root_by_key)
+    untrusted = (
+        index.unsupported_structure or len(index.roots) != len(root_by_key)
+    )
     escaped = re.escape(package)
     modern_package_key_re = re.compile(
         r"^/?" + escaped + r"@([^:(\"']+)(?:\(.*\))?$"
@@ -963,6 +1122,8 @@ def _extract_pnpm_lock_version_info(
     if len(package_sections) != 1:
         return LockfilePackageVersions(mixed_or_untrusted=True)
     package_section = package_sections[0]
+    if nodes[package_section].value:
+        untrusted = True
     if _yaml_has_duplicate_child_keys(index, package_section):
         untrusted = True
     direct_package_nodes = set(index.children.get(package_section, ()))
@@ -972,6 +1133,8 @@ def _extract_pnpm_lock_version_info(
     direct_snapshot_nodes: set[int] = set()
     if len(snapshot_sections) == 1 and generation == "9.0":
         snapshot_section = snapshot_sections[0]
+        if nodes[snapshot_section].value:
+            untrusted = True
         direct_snapshot_nodes.update(index.children.get(snapshot_section, ()))
         if _yaml_has_duplicate_child_keys(index, snapshot_section):
             untrusted = True
@@ -1007,8 +1170,6 @@ def _extract_pnpm_lock_version_info(
             untrusted = True
             continue
         versions.add(version)
-        if not _pnpm_block_is_registry_backed(index, idx, package, version):
-            untrusted = True
     if not snapshot_versions.issubset(versions):
         untrusted = True
 
@@ -1019,6 +1180,8 @@ def _extract_pnpm_lock_version_info(
     dependency_maps: list[int] = []
     if len(importer_sections) == 1:
         importer_section = importer_sections[0]
+        if nodes[importer_section].value:
+            untrusted = True
         if _yaml_has_duplicate_child_keys(index, importer_section):
             untrusted = True
         for importer in index.children.get(importer_section, ()):
@@ -1079,33 +1242,61 @@ def _extract_pnpm_lock_version_info(
 
 
 def _extract_cargo_lock_version_info(
-    lockfile: Path, package: str
+    lockfile: Path, package: str, text: str | None = None
 ) -> LockfilePackageVersions:
     try:
-        text = lockfile.read_text(encoding="utf-8", errors="strict")
+        if text is None:
+            text = lockfile.read_text(encoding="utf-8", errors="strict")
     except (OSError, UnicodeError):
         return LockfilePackageVersions(mixed_or_untrusted=True)
+    if _CARGO_INVALID_LINE_BREAK_RE.search(text):
+        return LockfilePackageVersions(mixed_or_untrusted=True)
+    lines = text.replace("\r\n", "\n").split("\n")
     versions: set[str] = set()
     untrusted = False
-    for block in re.split(r"(?m)^\[\[package\]\]\s*$", text):
-        names = re.findall(r'(?m)^name\s*=\s*"([^"]+)"\s*$', block)
+    blocks: list[list[str]] = []
+    current: list[str] | None = None
+    for line in lines:
+        if _CARGO_PACKAGE_HEADER_RE.fullmatch(line):
+            if current is not None:
+                blocks.append(current)
+            current = []
+            continue
+        if _CARGO_TABLE_HEADER_RE.fullmatch(line):
+            if current is not None:
+                blocks.append(current)
+                current = None
+            continue
+        if current is not None:
+            current.append(line)
+    if current is not None:
+        blocks.append(current)
+
+    for block in blocks:
+        names: list[str] = []
+        version_values: list[str] = []
+        invalid_identity = False
+        for line in block:
+            if re.match(r"^[ \t]*(?:name|version)[ \t]*=", line) is None:
+                continue
+            match = _CARGO_IDENTITY_ASSIGNMENT_RE.fullmatch(line)
+            if match is None:
+                invalid_identity = True
+                continue
+            key, double, single = match.groups()
+            value = double if double is not None else single
+            assert value is not None
+            (names if key == "name" else version_values).append(value)
         if package not in names:
             continue
-        version_values = re.findall(
-            r'(?m)^\s*version\s*=\s*"([^"]+)"\s*$', block
-        )
-        source_values = re.findall(
-            r'(?m)^\s*source\s*=\s*"([^"]+)"\s*$', block
-        )
         for version in version_values:
-            if _is_exact_registry_version(version):
+            if _is_exact_registry_version(version, "crates.io"):
                 versions.add(version)
         if (
-            len(names) != 1
+            invalid_identity
+            or len(names) != 1
             or len(version_values) != 1
-            or len(source_values) != 1
-            or not _is_exact_registry_version(version_values[0])
-            or not _is_cargo_registry_source(source_values[0])
+            or not _is_exact_registry_version(version_values[0], "crates.io")
         ):
             untrusted = True
     return LockfilePackageVersions(
@@ -1114,7 +1305,7 @@ def _extract_cargo_lock_version_info(
 
 
 _LOCKFILE_VERSION_EXTRACTORS: dict[
-    str, Callable[[Path, str], LockfilePackageVersions]
+    str, Callable[[Path, str, str | None], LockfilePackageVersions]
 ] = {
     "package-lock.json": _extract_package_lock_version_info,
     "yarn.lock": _extract_yarn_lock_version_info,
@@ -1126,12 +1317,202 @@ _IOC_VERSION_ECOSYSTEMS = frozenset(_LOCKFILE_POLICY_ECOSYSTEMS.values())
 
 
 def _extract_lockfile_version_info(
-    lockfile: Path, package: str
+    lockfile: Path, package: str, text: str | None = None
 ) -> LockfilePackageVersions:
     extractor = _LOCKFILE_VERSION_EXTRACTORS.get(lockfile.name)
     if extractor is None:
         return LockfilePackageVersions(mixed_or_untrusted=True)
-    return extractor(lockfile, package)
+    return extractor(lockfile, package, text)
+
+
+def _has_malicious_osv_family(vulns: list[dict]) -> bool:
+    """Return true when OSV identifies malicious code in the package/version."""
+    malicious_markers = {"malicious-code", "malicious code"}
+
+    for vuln in vulns:
+        identifiers = [vuln.get("id")]
+        aliases = vuln.get("aliases")
+        if isinstance(aliases, list):
+            identifiers.extend(aliases)
+        if any(
+            isinstance(identifier, str) and identifier.startswith("MAL-")
+            for identifier in identifiers
+        ):
+            return True
+        for field_name in ("database_specific", "ecosystem_specific"):
+            stack = [vuln.get(field_name)]
+            seen_containers: set[int] = set()
+            visited = 0
+            while stack and visited < _OSV_MARKER_NODE_LIMIT:
+                value = stack.pop()
+                visited += 1
+                if isinstance(value, str):
+                    normalized = value.strip().lower().replace("_", "-")
+                    if normalized in malicious_markers:
+                        return True
+                elif isinstance(value, (list, dict)):
+                    identity = id(value)
+                    if identity in seen_containers:
+                        continue
+                    seen_containers.add(identity)
+                    stack.extend(value if isinstance(value, list) else value.values())
+    return False
+
+
+def _is_bounded_osv_marker_tree(value: object) -> bool:
+    """Return false if a consumed advisory subtree exceeds its work budget."""
+    stack = [value]
+    seen_containers: set[int] = set()
+    visited = 0
+    while stack:
+        node = stack.pop()
+        visited += 1
+        if visited > _OSV_MARKER_NODE_LIMIT:
+            return False
+        if isinstance(node, (list, dict)):
+            identity = id(node)
+            if identity in seen_containers:
+                continue
+            seen_containers.add(identity)
+            stack.extend(node if isinstance(node, list) else node.values())
+    return True
+
+
+def _is_schema_valid_osv_vuln(vuln: dict[object, object]) -> bool:
+    """Validate every OSV field consumed by malicious-package classification."""
+    vuln_id = vuln.get("id")
+    if not isinstance(vuln_id, str) or not vuln_id or len(vuln_id) > 512:
+        return False
+    aliases = vuln.get("aliases", [])
+    if not isinstance(aliases, list) or any(
+        not isinstance(alias, str) or not alias or len(alias) > 512
+        for alias in aliases
+    ):
+        return False
+    for field_name in ("database_specific", "ecosystem_specific"):
+        value = vuln.get(field_name, {})
+        if not isinstance(value, dict) or not _is_bounded_osv_marker_tree(value):
+            return False
+    return True
+
+
+def query_osv_api(
+    package: str,
+    version: str | None = None,
+    *,
+    ecosystem: str,
+) -> OsvApiClassification:
+    """Query OSV for an exact version; failure means fallback is unavailable."""
+    payload: dict[str, object] = {
+        "package": {"name": package, "ecosystem": ecosystem}
+    }
+    if version is not None:
+        payload["version"] = version
+    try:
+        request = urllib.request.Request(
+            _OSV_API,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+                "User-Agent": "coldclone-ioc-scan",
+            },
+        )
+        with urllib.request.urlopen(
+            request, timeout=_OSV_TIMEOUT_SECONDS
+        ) as response:
+            raw = response.read(_OSV_RESPONSE_LIMIT + 1)
+        if len(raw) > _OSV_RESPONSE_LIMIT:
+            return OsvApiClassification(
+                status="failed", diagnostic="response-too-large"
+            )
+        duplicate_key = False
+
+        def object_pairs(
+            pairs: list[tuple[str, object]],
+        ) -> dict[str, object]:
+            nonlocal duplicate_key
+            result: dict[str, object] = {}
+            for key, value in pairs:
+                if key in result:
+                    duplicate_key = True
+                result[key] = value
+            return result
+
+        def reject_constant(value: str) -> object:
+            raise ValueError(f"non-standard JSON constant: {value}")
+
+        data = json.loads(
+            raw.decode("utf-8", errors="strict"),
+            object_pairs_hook=object_pairs,
+            parse_constant=reject_constant,
+        )
+        if duplicate_key:
+            return OsvApiClassification(
+                status="failed", diagnostic="duplicate-response-key"
+            )
+        if not isinstance(data, dict):
+            return OsvApiClassification(
+                status="failed", diagnostic="malformed-response"
+            )
+        vulns = data.get("vulns", [])
+        if not isinstance(vulns, list) or any(
+            not isinstance(vuln, dict) or not _is_schema_valid_osv_vuln(vuln)
+            for vuln in vulns
+        ):
+            return OsvApiClassification(
+                status="failed", diagnostic="malformed-vulns"
+            )
+        return OsvApiClassification(status="success", vulns=vulns)
+    except urllib.error.URLError as exc:
+        return OsvApiClassification(
+            status="failed", diagnostic=f"urlerror:{exc.reason}"
+        )
+    except (
+        OSError, UnicodeError, ValueError, RecursionError,
+    ) as exc:
+        return OsvApiClassification(
+            status="failed", diagnostic=f"{type(exc).__name__}:{exc}"
+        )
+
+
+def _has_unsupported_identity_encoding(lockfile_name: str, text: str) -> bool:
+    """Reject encodings our bounded exact extractors cannot safely interpret."""
+    if lockfile_name in _YAML_LOCKFILES:
+        return _YAML_IDENTITY_ESCAPE_RE.search(text) is not None
+    if lockfile_name != "Cargo.lock":
+        return False
+    if _CARGO_INVALID_LINE_BREAK_RE.search(text):
+        return True
+    in_package = False
+    for line in text.replace("\r\n", "\n").split("\n"):
+        if _CARGO_PACKAGE_HEADER_RE.fullmatch(line):
+            in_package = True
+            continue
+        loose = line.strip()
+        if loose.startswith("[") and _CARGO_TABLE_HEADER_RE.fullmatch(line) is None:
+            # Only ASCII space/tab are TOML structural whitespace. A malformed
+            # boundary must not terminate a package block and hide identities.
+            return True
+        if loose.startswith("[[") and "package" in loose:
+            # A package-table-like header outside the supported TOML grammar
+            # can otherwise make following identity fields look like metadata.
+            return True
+        if _CARGO_TABLE_HEADER_RE.fullmatch(line):
+            in_package = False
+            continue
+        if (
+            in_package
+            and (
+                _CARGO_QUOTED_KEY_RE.match(line.lstrip()) is not None
+                or (
+                    _CARGO_IDENTITY_LIKE_RE.match(line)
+                    and _CARGO_IDENTITY_ASSIGNMENT_RE.fullmatch(line) is None
+                )
+            )
+        ):
+            return True
+    return False
 
 
 def ioc_grep(
@@ -1148,23 +1529,43 @@ def ioc_grep(
     iocs_pep503 = {_pep503(i): i for i in iocs}
     hits: list[IocHit] = []
     unreadable: list[Path] = []
+    total_bytes = 0
+    aggregate_limit_reached = False
     for lf in lockfiles:
+        if aggregate_limit_reached:
+            unreadable.append(lf)
+            continue
         try:
-            text = lf.read_text(encoding="utf-8", errors="replace")
-        except OSError:
+            remaining_bytes = _LOCKFILE_TOTAL_SIZE_LIMIT - total_bytes
+            read_limit = min(_LOCKFILE_SIZE_LIMIT + 1, remaining_bytes + 1)
+            with lf.open("rb") as stream:
+                raw = stream.read(read_limit)
+            total_bytes += len(raw)
+            if total_bytes > _LOCKFILE_TOTAL_SIZE_LIMIT:
+                aggregate_limit_reached = True
+                unreadable.append(lf)
+                continue
+            if len(raw) > _LOCKFILE_SIZE_LIMIT:
+                unreadable.append(lf)
+                continue
+            text = raw.decode(
+                "utf-8", errors="strict" if lf.name in _JSON_LOCKFILES else "replace"
+            )
+        except (OSError, UnicodeError):
             unreadable.append(lf)
             continue
         is_pypi = lf.name in _PYPI_LOCKFILES
-        for line_no, line in enumerate(text.splitlines(), start=1):
-            seen: set[str] = set()  # dedupe repeats within one line
-            for tok in _TOKEN_RE.findall(line):
+        recorded_in_file: set[str] = set()
+
+        def record_candidates(value: str, line_no: int) -> None:
+            for tok in _TOKEN_RE.findall(value):
                 for cand in _candidates(tok):
                     matched = None
                     if cand in iocs:
                         matched = cand
-                    elif is_pypi:  # PEP 503: hyphen/underscore/dot + case insensitive
+                    elif is_pypi:
                         matched = iocs_pep503.get(_pep503(cand))
-                    if matched and matched not in seen:
+                    if matched and matched not in recorded_in_file:
                         entry = iocs[matched]
                         hits.append(IocHit(
                             lockfile=lf,
@@ -1172,15 +1573,99 @@ def ioc_grep(
                             lockfile_line_no=line_no,
                             ioc_line_no=entry.line_no,
                             version_evidence=entry.version_evidence,
+                            affected_set_complete=entry.affected_set_complete,
+                            lockfile_text=text,
                         ))
-                        seen.add(matched)
+                        recorded_in_file.add(matched)
+
+        for line_no, line in enumerate(text.splitlines(), start=1):
+            record_candidates(line, line_no)
+
+        if _has_unsupported_identity_encoding(lf.name, text):
+            # Raw matches still surface first, but an encoded identity invisible
+            # to the textual gate cannot be certified clean by a partial parser.
+            unreadable.append(lf)
+            continue
+
+        if lf.name in _JSON_LOCKFILES:
+            duplicate_key = False
+
+            def object_pairs(
+                pairs: list[tuple[str, object]],
+            ) -> dict[str, object]:
+                nonlocal duplicate_key
+                result: dict[str, object] = {}
+                for key, value in pairs:
+                    if key in result:
+                        duplicate_key = True
+                    result[key] = value
+                return result
+
+            try:
+                decoded = json.loads(text, object_pairs_hook=object_pairs)
+            except (ValueError, RecursionError):
+                # Raw scanning still gets to surface a definitive hit first, but
+                # malformed structured input cannot be certified clean: escaped
+                # JSON identifiers may otherwise be invisible in serialized text.
+                unreadable.append(lf)
+                continue
+            if duplicate_key:
+                unreadable.append(lf)
+                continue
+            stack = [decoded]
+            while stack:
+                value = stack.pop()
+                if isinstance(value, dict):
+                    stack.extend(value.values())
+                    strings = value.keys()
+                elif isinstance(value, list):
+                    stack.extend(value)
+                    continue
+                elif isinstance(value, str):
+                    strings = (value,)
+                else:
+                    continue
+                for string in strings:
+                    # Decoded JSON may reveal `ke\u0079v` as `keyv`. Only add
+                    # aggregate evidence for identities raw text did not expose.
+                    record_candidates(string, 0)
     return hits, unreadable
 
 
-def classify_ioc_hits(hits: list[IocHit]) -> list[IocHit]:
-    """Enrich trusted curated intersections without ever clearing a name hit."""
+def classify_ioc_hits(
+    hits: list[IocHit], *, use_osv: bool = False
+) -> list[IocHit]:
+    """Apply package-wide or exact-version malicious-package policy.
+
+    A plain-only entry blocks every version. Once VERSION records exist for an
+    ecosystem, only trusted exact intersections block locally. OSV is an
+    opportunistic supplement: an exact malicious-code advisory adds a hit, but
+    a clean response or unavailable API leaves the locally disjoint version
+    safe. Structurally ambiguous version evidence remains a hit because no safe
+    exact version was established; registry URL/integrity metadata is not part
+    of the package-version identity.
+    """
     classified: list[IocHit] = []
     processed_version_aware: set[tuple[Path, str, str]] = set()
+    extraction_counts: dict[Path, int] = {}
+    osv_cache: dict[tuple[str, str, str], OsvApiClassification] = {}
+    osv_query_count = 0
+
+    def query(package: str, ecosystem: str, version: str) -> OsvApiClassification:
+        nonlocal osv_query_count
+        key = (ecosystem, package, version)
+        if key not in osv_cache:
+            if osv_query_count >= _OSV_QUERY_LIMIT:
+                osv_cache[key] = OsvApiClassification(
+                    status="failed", diagnostic="per-scan-query-budget-exhausted"
+                )
+            else:
+                osv_query_count += 1
+                osv_cache[key] = query_osv_api(
+                    package, version, ecosystem=ecosystem
+                )
+        return osv_cache[key]
+
     for hit in hits:
         ecosystem = _LOCKFILE_POLICY_ECOSYSTEMS.get(hit.lockfile.name)
         evidence = hit.version_evidence.get(ecosystem or "", ())
@@ -1193,30 +1678,58 @@ def classify_ioc_hits(hits: list[IocHit]) -> list[IocHit]:
             continue
         processed_version_aware.add(aggregate_key)
 
-        version_info = _extract_lockfile_version_info(hit.lockfile, hit.ioc)
-        if not version_info.mixed_or_untrusted:
-            matched = [
-                (version, line_no)
-                for version, line_no in evidence
-                if version in version_info.versions
-            ]
-            if matched:
-                for version, line_no in matched:
+        extraction_count = extraction_counts.get(hit.lockfile, 0) + 1
+        extraction_counts[hit.lockfile] = extraction_count
+        if extraction_count > _VERSION_EXTRACTION_LIMIT_PER_LOCKFILE:
+            # Refuse rather than perform attacker-amplified reparsing or clear a
+            # candidate whose exact version was not established within budget.
+            classified.append(hit)
+            continue
+
+        version_info = _extract_lockfile_version_info(
+            hit.lockfile, hit.ioc, hit.lockfile_text
+        )
+        if version_info.mixed_or_untrusted:
+            classified.append(hit)
+            continue
+        if not version_info.versions:
+            # The exact extractor found no installed package record. The grep
+            # match came from non-install metadata such as a peer-dependency
+            # key, so there is no release to compare with the denylist.
+            continue
+
+        matched = [
+            (version, line_no)
+            for version, line_no in evidence
+            if version in version_info.versions
+        ]
+        if matched:
+            for version, line_no in matched:
+                classified.append(replace(
+                    hit,
+                    lockfile_line_no=0,
+                    ioc_line_no=line_no,
+                    versions=(version,),
+                    ecosystem=ecosystem,
+                    verification="ioc-list-version-match",
+                    whole_file_kind="curated-version-pair",
+                ))
+            continue
+
+        if use_osv:
+            for version in version_info.versions:
+                result = query(hit.ioc, ecosystem or "", version)
+                if result.status == "success" and _has_malicious_osv_family(
+                    result.vulns
+                ):
                     classified.append(replace(
                         hit,
                         lockfile_line_no=0,
-                        ioc_line_no=line_no,
                         versions=(version,),
                         ecosystem=ecosystem,
-                        verification="ioc-list-version-match",
-                        whole_file_kind="curated-version-pair",
+                        verification="osv-malicious-version-match",
+                        whole_file_kind="osv-version-pair",
                     ))
-                continue
-
-        # VERSION records are incomplete positive evidence, never an allowlist.
-        # Unsupported, untrusted, malformed, and disjoint extraction all retain
-        # the original package-wide name hit and therefore the same hard halt.
-        classified.append(hit)
     return classified
 
 
@@ -1225,6 +1738,13 @@ def main() -> int:
     ap.add_argument("repo", type=Path, help="path to the cloned repo to scan")
     ap.add_argument("--ioc-list", type=Path, default=_DEFAULT_IOC_LIST,
                     help=f"IoC list file (default: {_DEFAULT_IOC_LIST})")
+    ap.add_argument(
+        "--offline",
+        action="store_true",
+        help=(
+            "disable opportunistic exact-version OSV malicious-package lookups"
+        ),
+    )
     args = ap.parse_args()
 
     repo = args.repo.resolve()
@@ -1251,7 +1771,7 @@ def main() -> int:
     try:
         lockfiles, symlinked, traversal_errors = discover_lockfiles(repo)
         name_hits, unreadable = ioc_grep(lockfiles, iocs)
-        hits = classify_ioc_hits(name_hits)
+        hits = classify_ioc_hits(name_hits, use_osv=not args.offline)
     except Exception as exc:
         print(
             f"error: IoC scan failed unexpectedly ({type(exc).__name__}: {exc}) "
@@ -1285,11 +1805,31 @@ def main() -> int:
                     f"{hit.verification}",
                     file=sys.stderr,
                 )
+            elif hit.whole_file_kind == "osv-version-pair":
+                version = hit.versions[0]
+                print(
+                    f"  HIT: {hit.ioc}@{version}  in  {rel}:whole-file "
+                    "(OSV malicious-version match)",
+                    file=sys.stderr,
+                )
+                print(
+                    f"       source: OSV API  ecosystem: {hit.ecosystem}  "
+                    f"verification: {hit.verification}",
+                    file=sys.stderr,
+                )
             else:
                 print(
                     f"  HIT: {hit.ioc}  in  {rel}:{hit.lockfile_line_no}",
                     file=sys.stderr,
                 )
+                if hit.versions or hit.verification != "name-only":
+                    versions = ", ".join(hit.versions) or "unparsed"
+                    print(
+                        f"       locked versions: {versions}  "
+                        f"ecosystem: {hit.ecosystem or 'unknown'}  "
+                        f"verification: {hit.verification}",
+                        file=sys.stderr,
+                    )
         return 2
 
     # Discovered lockfiles we could not actually scan (unreadable, or a symlink we

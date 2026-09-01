@@ -17,22 +17,39 @@ virtual machine, container, or sandbox), not a replacement for one.
   files it must leave live so you can read scope.
 - **`ioc_scan.py`** — a known-malicious-dependency tripwire that greps lockfiles
   (npm / PyPI / cargo / Go / …) against a maintained indicator list. It reports
-  trusted exact affected-version evidence for npm-family and Cargo lockfiles
-  when available, while preserving conservative package-wide hits. Read-only;
-  no install, no execution, no network or OSV dependency.
+  trusted exact malicious-version evidence for npm-family and Cargo lockfiles
+  when available, while preserving package-wide hits for all-malicious
+  identities. Read-only; no install or execution. Its optional OSV fallback uses
+  the network by default and can be disabled with `--offline`.
 - **`coldclone.sh`** — orchestrates a hardened clone (symlinks off, LFS filters
   neutralized, dangerous transports blocked, pinned + path-validated submodules)
   then the `scan` + `sanitize` steps.
 
-Plain entries in `ioc-list.txt` remain package-wide triggers. Structured
-`VERSION: <ecosystem> | <package> | <exact-version>` records are additive
-positive evidence: a trusted exact intersection produces a more precise alert,
-but an unlisted, ambiguous, unsupported, or source-untrusted version still falls
-back to the plain-name halt because disclosed affected-version sets can be
-incomplete. Exact extraction is closed to package-lock, Yarn Classic, pnpm
-records with an authoritative npm-registry tarball, and Cargo. Yarn Berry's
-registry-configurable `npm:` locators remain name-only; policy syntax errors
-fail the IoC gate closed.
+Plain entries in `ioc-list.txt` are package-wide triggers for identities whose
+entire release family is malicious, such as typosquats. Adding
+`VERSION: <ecosystem> | <package> | <exact-semver>` makes that identity
+version-scoped: a trusted exact intersection alerts, while any other trusted
+exact version is treated as safe. Registry URL and integrity metadata are not
+part of version identity. Structurally ambiguous or unsupported evidence still
+halts because the scanner cannot prove which release is locked; a trusted
+extractor finding no installed record clears a textual metadata-only match. Legacy
+`AFFECTED_SET_COMPLETE: <ecosystem> | <package>` records remain accepted as
+provenance but are not required for clearance.
+
+Exact extraction covers package-lock, Yarn Classic, structurally validated Yarn
+Berry `npm:` locators, structurally validated pnpm package keys/importer
+versions, and Cargo. Registry tarball, source, and integrity metadata are ignored
+because it does not determine the locked package/version identity. By default,
+version-scoped disjoint matches also receive an
+opportunistic exact-version OSV API lookup; only a malicious-code advisory adds
+a hit. A clean response or unavailable OSV leaves the local exact-denylist
+decision unchanged. Use `--offline` to disable network lookups. Policy syntax
+errors still fail the IoC gate closed. To keep hostile input from amplifying host
+work, lockfiles over 8 MiB fail closed, aggregate lockfile input is capped at
+64 MiB, discovery is capped at 100,000 entries and 1,024 lockfiles, exact
+extraction is capped at 16 policy identities per lockfile (additional
+candidates remain blocking name hits), and a scan makes at most 10 OSV requests
+with a five-second timeout each.
 
 ## Install as an agent plugin
 
