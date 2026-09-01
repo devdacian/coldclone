@@ -1902,8 +1902,10 @@ def scan_content_warn(repo: Path) -> list[str]:
                 elif nm == ".gitmodules":
                     # newline="" preserves \r so the CVE-2025-48384 CR vector is
                     # not silently translated to \n before _warn_gitmodules sees it
-                    out += _warn_gitmodules(
-                        rel, p.read_text(encoding="utf-8", errors="replace", newline=""))
+                    with p.open(
+                        "r", encoding="utf-8", errors="replace", newline=""
+                    ) as f:
+                        out += _warn_gitmodules(rel, f.read())
                 elif nm == "nx.json":
                     out += _warn_nx(rel, json.loads(p.read_text(encoding="utf-8")))
                 elif nm == "turbo.json":
