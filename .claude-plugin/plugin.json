@@ -1,6 +1,6 @@
 {
   "name": "coldclone",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Host-side gauntlet for fetching, scanning, and sanitizing untrusted repositories before any agent, editor, or toolchain opens them.",
   "author": {
     "name": "Dacian"

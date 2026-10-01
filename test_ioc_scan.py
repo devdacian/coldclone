@@ -211,11 +211,15 @@ def test_canonical_policy_has_pinned_version_and_complete_set_shape() -> None:
         ("npm", "@injectivelabs/sdk-ts", "1.20.21"),
         ("npm", "jscrambler", "8.20.0"),
         ("npm", "@joyfill/layouts", "0.1.2-2773.beta.0"),
+        ("npm", "@memtensor/memos-cloud-openclaw-plugin", "0.1.25"),
+        ("npm", "@nubjs/types", "0.9.4"),
+        ("crates.io", "arrayref", "0.3.10"),
+        ("crates.io", "greentic-setup", "1.3.1-dev.34027618345"),
     }
-    assert len(actual) == 2371
+    assert len(actual) == 2400
     assert expected_sentinels <= actual
-    assert len(iocs) == 1017
-    assert sum(bool(entry.version_evidence) for entry in iocs.values()) == 507
+    assert len(iocs) == 6477
+    assert sum(bool(entry.version_evidence) for entry in iocs.values()) == 521
 
     complete = {
         (ecosystem, package)
