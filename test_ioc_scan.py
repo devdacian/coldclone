@@ -1948,3 +1948,790 @@ def test_plain_only_package_wide_hit_never_calls_osv(
     hits = _scan_hits(repo, policy, use_osv=True)
     assert len(hits) == 1
     assert hits[0].ioc == "node-loggers"
+
+
+# --- Bun lockfiles (bun.lock text, bun.lockb binary) -----------------------
+
+# Real `bun install --lockfile-only` output (Bun 1.4.2, binary format 3) for
+# {"keyv": "4.5.4", "keyv-next": "npm:keyv@5.0.0"} plus workspace `wsa`.
+_BUN_LOCKB_FORMAT3_B64 = (
+    "IyEvdXNyL2Jpbi9lbnYgYnVuCmJ1bi1sb2NrZmlsZS1mb3JtYXQtdjAKAwAAAHVBBDE2PrgL"
+    "b43KQmQqdpHd/3V3KbA292DcIWvi7WGjCAsAAAAAAAAGAAAAAAAAAAgAAAAAAAAACAAAAAAA"
+    "AACAAAAAAAAAAJ4GAAAAAAAAAABmeAAAAAAAAGtleXYAAAAAUwAAAA8AAIBrZXl2AAAAANIA"
+    "AAALAACAd3NhAAAAAADdpgjQ5OypTP7oIvT3dBWZx42jaFAA/d3+6CL093QVmW0pHmKqlGJP"
+    "/3NhrPDJpucBAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAAAAAAAAACMAAAAwAACABQAAAAAAAAAAAAAA"
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAAAAAAAAAGIA"
+    "AABAAACAAQAAAAAAAAABAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    "AAAAAAAAAAACAAAAAAAAAKIAAAAwAACABAAAAAAAAAAFAAAAAAAAAAQAAAAAAAAAAAAAAAAA"
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAAAAAAAAAN0AAAA+AACAAwAAAAAAAAAAAAAA"
+    "AAAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABIAAAAAAAAAAAA"
+    "AAAMAACAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    "AAAAAAAAAAAAAAAAAwAAAAMAAAABAAAABAAAAAAAAAAEAAAAAQAAAAUAAAAAAAAABQAAAAAA"
+    "AAAAAAAAAwAAAAMAAAABAAAABAAAAAAAAAAEAAAAAQAAAAUAAAAAAAAABQAAAAAAAAAAAP4P"
+    "/gEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAQD+D/4BAAABAAAAAAAAAAAAAAAEqtmx"
+    "o+NR06YxIrywQzkxQG5bsNKR4GlOHZzrJHKsRXATU8ivqptnMllSuPIJRtaLmDGWdAK/n6JV"
+    "fbBgRfTuXQEAAAEA/g/+AQAAAgAAAAAAAAAAAAAABHV59xWYT79FEvu3bSbCItkfnO6lmIkX"
+    "qBIec1J7Vgn+KEqTDYm/BQ4UqHnept0MmXceYSu4ixZGJN6zccLfL0wBAAABAP4P/gEAAAMA"
+    "AAAAAAAAAAAAAASjFUeQdH8Ql/YI1edbFEtbqaDsnIIJRwbQO0QaYvZy1SjU81OKfU9SKX6v"
+    "/7ivkylWAL9+fWSOzHuaNK6MqoinAQAAAQD+D/4BAAAEAAAAAAAAAAAAAAAE4bV5BfR2mqfQ"
+    "TJm+V5tPPdf+ZpuhiIvTuAB5g8kcrXOZpTT/QwwVRWBywX1ozr6lEuPdbHxwaJlm9G6mI2sf"
+    "SQEAAAEA/g/+AQAABQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAA"
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAA"
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAHgBgAAAAAAAPQGAAAAAAAACjxpbnN0YWxsLmxvY2tmaWxl"
+    "LlRyZWU+IDIwIHNpemVvZiwgNCBhbGlnbm9mCgAAAAAAAAAA/v////////8AAAAABQAAACAH"
+    "AAAAAAAANAcAAAAAAAAKPHUzMj4gNCBzaXplb2YsIDQgYWxpZ25vZgoAAAAAAAEAAAACAAAA"
+    "BAAAAAMAAABgBwAAAAAAAHQHAAAAAAAACjx1MzI+IDQgc2l6ZW9mLCA0IGFsaWdub2YKAAUA"
+    "AAADAAAAAQAAAAIAAAAEAAAAqAcAAAAAAAAqCAAAAAAAAAo8WzI2XXU4PiAyNiBzaXplb2Ys"
+    "IDEgYWxpZ25vZgoAAAAAAHdzYQAAAAAA/3NhrPDJpucgBgAAAAAMAACAa2V5dgAAAAD+6CL0"
+    "93QVmQIBNC41LjQAAAAaAAAACQAAgH/xgcyflue6AgEMAAAADgAAgFMAAAAPAACAx42jaFAA"
+    "/d0CASoAAAAAAAAA0gAAAAsAAIBtKR5iqpRiTwIBMy4wLjEAAAB3CAAAAAAAAHcIAAAAAAAA"
+    "CjxzZW12ZXIuRXh0ZXJuYWxTdHJpbmcuRXh0ZXJuYWxTdHJpbmc+IDE2IHNpemVvZiwgOCBh"
+    "bGlnbm9mCqgIAAAAAAAAwwkAAAAAAAAKPHU4PiAxIHNpemVvZiwgMSBhbGlnbm9mCgAAAAAA"
+    "AABwYWNrYWdlcy93c2FucG06a2V5dkA1LjAuMGtleXYtbmV4dGh0dHBzOi8vcmVnaXN0cnku"
+    "bnBtanMub3JnL2tleXYvLS9rZXl2LTUuMC4wLnRnekBrZXl2L3NlcmlhbGl6ZWh0dHBzOi8v"
+    "cmVnaXN0cnkubnBtanMub3JnL0BrZXl2L3NlcmlhbGl6ZS8tL3NlcmlhbGl6ZS0xLjEuMS50"
+    "Z3podHRwczovL3JlZ2lzdHJ5Lm5wbWpzLm9yZy9rZXl2Ly0va2V5di00LjUuNC50Z3pqc29u"
+    "LWJ1ZmZlcmh0dHBzOi8vcmVnaXN0cnkubnBtanMub3JnL2pzb24tYnVmZmVyLy0vanNvbi1i"
+    "dWZmZXItMy4wLjEudGd6AAAAAAAAAAB3T3JLc1BhQwAKAAAAAAAACAoAAAAAAAAKPHU2ND4g"
+    "OCBzaXplb2YsIDggYWxpZ25vZgoAAP9zYazwyabnSAoAAAAAAACACgAAAAAAAAo8c2VtdmVy"
+    "LlZlcnNpb24uVmVyc2lvbj4gNTYgc2l6ZW9mLCA4IGFsaWdub2YKAAEAAAAAAAAAAAAAAAAA"
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAsAoAAAAAAAC4CgAA"
+    "AAAAAAo8dTY0PiA4IHNpemVvZiwgOCBhbGlnbm9mCgAAAAAA/3NhrPDJpufwCgAAAAAAAPgK"
+    "AAAAAAAACjxzZW12ZXIuU3RyaW5nPiA4IHNpemVvZiwgMSBhbGlnbm9mCgAAAAAAAAAMAACA"
+    "Y05mR3ZSc04BAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=="
+)
+
+
+# The same package.json locked by Bun 1.1.38 (binary format 2, u32 versions).
+_BUN_LOCKB_FORMAT2_B64 = (
+    "IyEvdXNyL2Jpbi9lbnYgYnVuCmJ1bi1sb2NrZmlsZS1mb3JtYXQtdjAKAgAAAHVBBDE2PrgL"
+    "b43KQmQqdpHd/3V3KbA292DcIWvi7WGj0AoAAAAAAAAGAAAAAAAAAAgAAAAAAAAACAAAAAAA"
+    "AACAAAAAAAAAAG4GAAAAAAAAAABmeAAAAAAAAGtleXYAAAAAUwAAAA8AAIBrZXl2AAAAANIA"
+    "AAALAACAd3NhAAAAAADdpgjQ5OypTP7oIvT3dBWZx42jaFAA/d3+6CL093QVmW0pHmKqlGJP"
+    "/3NhrPDJpucBAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    "AAAAAAAAAAAAAAAAAAAAAAAAAgAAAAAAAAAjAAAAMAAAgAUAAAAAAAAAAAAAAAAAAAAAAAAA"
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIAAAAAAAAAYgAAAEAAAIABAAAAAQAAAAEA"
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAAAAAAAAAKIAAAAwAACA"
+    "BAAAAAUAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAAAAAA"
+    "AADdAAAAPgAAgAMAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    "AAAAAEgAAAAAAAAAAAAAAAwAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    "AAAAAAAAAAAAAAAAAAAAAAAAAwAAAAMAAAABAAAABAAAAAAAAAAEAAAAAQAAAAUAAAAAAAAA"
+    "BQAAAAAAAAAAAAAAAwAAAAMAAAABAAAABAAAAAAAAAAEAAAAAQAAAAUAAAAAAAAABQAAAAAA"
+    "AAAAAP4P/gEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAQD+D/4BAAABAAAAAAAAAAAA"
+    "AAAEqtmxo+NR06YxIrywQzkxQG5bsNKR4GlOHZzrJHKsRXATU8ivqptnMllSuPIJRtaLmDGW"
+    "dAK/n6JVfbBgRfTuXQEAAAEA/g/+AQAAAgAAAAAAAAAAAAAABHV59xWYT79FEvu3bSbCItkf"
+    "nO6lmIkXqBIec1J7Vgn+KEqTDYm/BQ4UqHnept0MmXceYSu4ixZGJN6zccLfL0wBAAABAP4P"
+    "/gEAAAMAAAAAAAAAAAAAAASjFUeQdH8Ql/YI1edbFEtbqaDsnIIJRwbQO0QaYvZy1SjU81OK"
+    "fU9SKX6v/7ivkylWAL9+fWSOzHuaNK6MqoinAQAAAQD+D/4BAAAEAAAAAAAAAAAAAAAE4bV5"
+    "BfR2mqfQTJm+V5tPPdf+ZpuhiIvTuAB5g8kcrXOZpTT/QwwVRWBywX1ozr6lEuPdbHxwaJlm"
+    "9G6mI2sfSQEAAAEA/g/+AQAABQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAA"
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABAAAA"
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAGwBgAAAAAAAMQGAAAAAAAACjxzcmMuaW5zdGFs"
+    "bC5sb2NrZmlsZS5UcmVlPiAyMCBzaXplb2YsIDQgYWxpZ25vZgoAAAAA/v////////8AAAAA"
+    "BQAAAPAGAAAAAAAABAcAAAAAAAAKPHUzMj4gNCBzaXplb2YsIDQgYWxpZ25vZgoAAAAAAAEA"
+    "AAACAAAABAAAAAMAAAAwBwAAAAAAAEQHAAAAAAAACjx1MzI+IDQgc2l6ZW9mLCA0IGFsaWdu"
+    "b2YKAAUAAAADAAAAAQAAAAIAAAAEAAAAeAcAAAAAAAD6BwAAAAAAAAo8WzI2XXU4PiAyNiBz"
+    "aXplb2YsIDEgYWxpZ25vZgoAAAAAAHdzYQAAAAAA/3NhrPDJpucgBgAAAAAMAACAa2V5dgAA"
+    "AAD+6CL093QVmQIBNC41LjQAAAAaAAAACQAAgH/xgcyflue6AgEMAAAADgAAgFMAAAAPAACA"
+    "x42jaFAA/d0CASoAAAAAAAAA0gAAAAsAAIBtKR5iqpRiTwIBMy4wLjEAAABECAAAAAAAAEQI"
+    "AAAAAAAACjxzcmMuaW5zdGFsbC5zZW12ZXIuRXh0ZXJuYWxTdHJpbmc+IDE2IHNpemVvZiwg"
+    "OCBhbGlnbm9mCnAIAAAAAAAAiwkAAAAAAAAKPHU4PiAxIHNpemVvZiwgMSBhbGlnbm9mCgAA"
+    "cGFja2FnZXMvd3NhbnBtOmtleXZANS4wLjBrZXl2LW5leHRodHRwczovL3JlZ2lzdHJ5Lm5w"
+    "bWpzLm9yZy9rZXl2Ly0va2V5di01LjAuMC50Z3pAa2V5di9zZXJpYWxpemVodHRwczovL3Jl"
+    "Z2lzdHJ5Lm5wbWpzLm9yZy9Aa2V5di9zZXJpYWxpemUvLS9zZXJpYWxpemUtMS4xLjEudGd6"
+    "aHR0cHM6Ly9yZWdpc3RyeS5ucG1qcy5vcmcva2V5di8tL2tleXYtNC41LjQudGd6anNvbi1i"
+    "dWZmZXJodHRwczovL3JlZ2lzdHJ5Lm5wbWpzLm9yZy9qc29uLWJ1ZmZlci8tL2pzb24tYnVm"
+    "ZmVyLTMuMC4xLnRnegAAAAAAAAAAd09yS3NQYUPICQAAAAAAANAJAAAAAAAACjx1NjQ+IDgg"
+    "c2l6ZW9mLCA4IGFsaWdub2YKAAD/c2Gs8Mmm5xgKAAAAAAAASAoAAAAAAAAKPHNyYy5pbnN0"
+    "YWxsLnNlbXZlci5WZXJzaW9uPiA0OCBzaXplb2YsIDggYWxpZ25vZgoAAAAAAAEAAAAAAAAA"
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAHgKAAAAAAAAgAoAAAAA"
+    "AAAKPHU2ND4gOCBzaXplb2YsIDggYWxpZ25vZgoAAAAAAP9zYazwyabnyAoAAAAAAADQCgAA"
+    "AAAAAAo8c3JjLmluc3RhbGwuc2VtdmVyLlN0cmluZz4gOCBzaXplb2YsIDEgYWxpZ25vZgoA"
+    "AAAAAAAAAAAAAAwAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+    "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+)
+
+
+def _real_bun_lockb(fmt: int = 3) -> bytes:
+    import base64
+
+    return base64.b64decode(
+        _BUN_LOCKB_FORMAT3_B64 if fmt == 3 else _BUN_LOCKB_FORMAT2_B64
+    )
+
+
+def _bun_lockb_bytes(
+    packages: list[tuple[str, int, tuple[int, int, int], str, str]],
+    dependencies: list[tuple[str, int, str]] = (),
+    *,
+    fmt: int = 3,
+) -> bytes:
+    """Serialize a minimal bun.lockb with the layout Bun writes.
+
+    `packages` rows are (name, resolution_tag, (major, minor, patch), pre, url);
+    `dependencies` rows are (name, behavior, literal), where a `bytes` literal
+    is written as a raw 8-byte String (to craft hostile pointers). Row 0 must be
+    the root.
+    """
+    import struct
+
+    strings = bytearray()
+
+    def string(value: str) -> bytes:
+        raw = value.encode()
+        if len(raw) <= 8:
+            return raw.ljust(8, b"\0")
+        offset = len(strings)
+        strings.extend(raw)
+        return struct.pack("<II", offset, len(raw) | 0x80000000)
+
+    version_size = 56 if fmt == 3 else 48
+    names, resolutions = b"", b""
+    for name, tag, (major, minor, patch), pre, url in packages:
+        names += string(name)
+        if fmt == 3:
+            version = struct.pack("<QQQ", major, minor, patch)
+        else:
+            version = struct.pack("<III", major, minor, patch) + b"\0" * 4
+        version += string(pre) + b"\0" * 8 + b"\0" * 16
+        assert len(version) == version_size
+        resolutions += bytes([tag]) + b"\0" * 7 + string(url) + version
+    count = len(packages)
+    table = (
+        names + b"\0" * 8 * count + resolutions
+        + b"\0" * (8 + 8 + 88 + 20 + 49) * count
+    )
+    dependency_bytes = b"".join(
+        string(name) + b"\0" * 8 + bytes([behavior, 1])
+        + (literal if isinstance(literal, bytes) else string(literal))
+        for name, behavior, literal in dependencies
+    )
+
+    out = bytearray(ioc_scan._BUN_LOCKB_HEADER)
+    out += struct.pack("<I", fmt) + b"\0" * 32
+    total_end_at = len(out)
+    out += b"\0" * 8
+    begin = (len(out) + 40 + 7) // 8 * 8
+    out += struct.pack("<QQQQQ", count, 8, 8, begin, begin + len(table))
+    out += b"\0" * (begin - len(out))
+    out += table
+    for size, payload in zip(
+        ioc_scan._BUN_LOCKB_BUFFER_SIZES,
+        (b"", b"", b"", dependency_bytes, b"", bytes(strings)),
+    ):
+        header_at = len(out)
+        out += b"\0" * 16
+        out += f"\n<t> {size} sizeof, 1 alignof\n".encode()
+        if payload:
+            out += b"\0" * (-len(out) % 8)
+        start = len(out)
+        out += payload
+        out[header_at:header_at + 16] = struct.pack("<QQ", start, len(out))
+    out += b"\0" * 8
+    out[total_end_at:total_end_at + 8] = struct.pack("<Q", len(out))
+    return bytes(out)
+
+
+def _keyv_row(version: tuple[int, int, int], *, url_version: str | None = None):
+    text = url_version or ".".join(map(str, version))
+    return (
+        "keyv", 2, version, "",
+        f"https://registry.npmjs.org/keyv/-/keyv-{text}.tgz",
+    )
+
+
+_BUN_ROOT_ROW = ("fixture-root", 1, (0, 0, 0), "", "")
+
+
+def _bun_lock_text(packages: dict[str, list[object]], **extra: object) -> str:
+    document: dict[str, object] = {
+        "lockfileVersion": 1,
+        "workspaces": {"": {"name": "fixture-root", "dependencies": {"keyv": "*"}}},
+        "packages": packages,
+    }
+    document.update(extra)
+    return json.dumps(document, indent=2)
+
+
+def test_bun_lockfiles_are_discovered_and_mapped_to_npm_extractors() -> None:
+    assert {"bun.lock", "bun.lockb"} <= ioc_scan._LOCKFILE_NAMES
+    assert ioc_scan._LOCKFILE_POLICY_ECOSYSTEMS["bun.lock"] == "npm"
+    assert ioc_scan._LOCKFILE_POLICY_ECOSYSTEMS["bun.lockb"] == "npm"
+
+
+def test_jsonc_normalizer_strips_only_comments_and_trailing_commas() -> None:
+    text = (
+        '{\n  // a comment\n  "a": "x, // not a comment ]",\n'
+        '  "b": [1, 2, /* c */],\n  "c": "\\"quoted,\\"",\n}\n'
+    )
+    data, duplicate = ioc_scan._load_jsonc(text)
+    assert not duplicate
+    assert data == {"a": "x, // not a comment ]", "b": [1, 2], "c": '"quoted,"'}
+    with pytest.raises(ValueError):
+        ioc_scan._load_jsonc('{"a": "unterminated}')
+
+
+def test_real_bun_generated_text_lockfile_shape_is_trusted(tmp_path: Path) -> None:
+    lockfile = tmp_path / "bun.lock"
+    lockfile.write_text(
+        '{\n  "lockfileVersion": 2,\n  "configVersion": 1,\n  "workspaces": {\n'
+        '    "": {\n      "name": "fx",\n      "dependencies": {\n'
+        '        "keyv": "4.5.4",\n        "keyv-next": "npm:keyv@5.0.0",\n'
+        '      },\n    },\n    "packages/wsa": {\n      "name": "wsa",\n'
+        '      "version": "1.0.0",\n    },\n  },\n  "packages": {\n'
+        '    "@keyv/serialize": ["@keyv/serialize@1.1.1", "", {}, "sha512-x"],\n\n'
+        '    "json-buffer": ["json-buffer@3.0.1", "", {}, "sha512-x"],\n\n'
+        '    "keyv": ["keyv@4.5.4", "", { "dependencies": { "json-buffer": '
+        '"3.0.1" } }, "sha512-x"],\n\n'
+        '    "keyv-next": ["keyv@5.0.0", "", { "dependencies": '
+        '{ "@keyv/serialize": "*" } }, "sha512-x"],\n\n'
+        '    "wsa": ["wsa@workspace:packages/wsa"],\n  }\n}\n',
+        encoding="utf-8",
+    )
+    info = ioc_scan._extract_bun_lock_version_info(lockfile, "keyv")
+    assert info == ioc_scan.LockfilePackageVersions(versions=("4.5.4", "5.0.0"))
+    assert ioc_scan._extract_bun_lock_version_info(lockfile, "wsa").mixed_or_untrusted
+    assert ioc_scan._extract_bun_lock_version_info(
+        lockfile, "keyv-next"
+    ).mixed_or_untrusted
+
+
+def test_bun_lock_clean_version_passes_and_malicious_version_halts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    policy = _policy(tmp_path / "ioc.txt", "keyv", "VERSION: npm | keyv | 6.0.0")
+    clean = tmp_path / "clean"
+    clean.mkdir()
+    (clean / "bun.lock").write_text(_bun_lock_text({
+        "keyv": ["keyv@4.5.4", "", {}, "sha512-x"],
+    }), encoding="utf-8")
+    assert _scan_hits(clean, policy) == []
+    assert _run_main(monkeypatch, clean, policy, "--offline") == 0
+
+    for key, identity in (
+        ("keyv", "keyv@6.0.0"),          # direct
+        ("which/keyv", "keyv@6.0.0"),    # nested install path
+        ("keyv-next", "keyv@6.0.0"),     # npm alias installs the real identity
+    ):
+        repo = tmp_path / key.replace("/", "_")
+        repo.mkdir()
+        (repo / "bun.lock").write_text(_bun_lock_text({
+            key: [identity, "", {}, "sha512-x"],
+        }), encoding="utf-8")
+        hits = _scan_hits(repo, policy)
+        assert [(hit.ioc, hit.versions, hit.verification) for hit in hits] == [
+            ("keyv", ("6.0.0",), "ioc-list-version-match")
+        ], key
+        assert _run_main(monkeypatch, repo, policy, "--offline") == 2
+
+
+@pytest.mark.parametrize(
+    "packages, extra",
+    [
+        ({"keyv": ["keyv@workspace:packages/keyv"]}, {}),
+        ({"keyv": ["keyv@github:owner/keyv#abc", {}, "owner-keyv-abc"]}, {}),
+        ({"keyv": ["keyv@https://evil.example/keyv.tgz", {}]}, {}),
+        ({"keyv": ["other@1.0.0", "", {}, "sha512-x"]}, {}),  # alias key hides keyv
+        ({"keyv": "keyv@4.5.4"}, {}),                          # malformed record
+        ({}, {}),                                   # declared but never resolved
+        ({"keyv": ["keyv@4.5.4", "", {}, "sha512-x"]}, {"lockfileVersion": 99}),
+        ({"keyv": ["keyv@4.5.4", "", {}, "sha512-x"]}, {"workspaces": []}),
+    ],
+)
+def test_bun_lock_untrusted_evidence_cannot_clear_a_version_scoped_name(
+    tmp_path: Path, packages: dict[str, object], extra: dict[str, object]
+) -> None:
+    policy = _policy(tmp_path / "ioc.txt", "keyv", "VERSION: npm | keyv | 6.0.0")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "bun.lock").write_text(_bun_lock_text(packages, **extra), encoding="utf-8")
+    hits = _scan_hits(repo, policy)
+    assert [hit.ioc for hit in hits] == ["keyv"]
+    assert hits[0].verification == "name-only"
+
+
+def test_bun_lock_peer_only_mention_is_not_an_install(tmp_path: Path) -> None:
+    policy = _policy(tmp_path / "ioc.txt", "keyv", "VERSION: npm | keyv | 6.0.0")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "bun.lock").write_text(json.dumps({
+        "lockfileVersion": 1,
+        "workspaces": {"": {"name": "root", "dependencies": {"cache": "1.0.0"}}},
+        "packages": {
+            "cache": ["cache@1.0.0", "", {"peerDependencies": {"keyv": "*"}}, "x"],
+        },
+    }), encoding="utf-8")
+    assert _scan_hits(repo, policy) == []
+
+
+def test_bun_lock_escaped_identity_and_duplicate_keys_fail_safe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    policy = _policy(tmp_path / "ioc.txt", "evil-pkg")
+    escaped = tmp_path / "escaped"
+    escaped.mkdir()
+    (escaped / "bun.lock").write_text(
+        '{"lockfileVersion": 1, "packages": {'
+        '"evil-pkg": ["evil-\\u0070kg@1.0.0", "", {}, "x"],}}',
+        encoding="utf-8",
+    )
+    assert [hit.ioc for hit in _scan_hits(escaped, policy)] == ["evil-pkg"]
+
+    duplicate = tmp_path / "duplicate"
+    duplicate.mkdir()
+    (duplicate / "bun.lock").write_text(
+        '{"lockfileVersion": 1, "packages": {"a": ["a@1.0.0"], "a": ["a@2.0.0"]}}',
+        encoding="utf-8",
+    )
+    assert _run_main(monkeypatch, duplicate, policy, "--offline") == 3
+
+    broken = tmp_path / "broken"
+    broken.mkdir()
+    (broken / "bun.lock").write_text('{"packages": {"x": [', encoding="utf-8")
+    assert _run_main(monkeypatch, broken, policy, "--offline") == 3
+
+
+@pytest.mark.parametrize("fmt", [2, 3])
+def test_real_bun_lockb_parses_every_identity(fmt: int) -> None:
+    parsed = ioc_scan._parse_bun_lockb(_real_bun_lockb(fmt))
+    assert parsed is not None
+    assert [
+        (package.name, package.resolution_tag, package.version)
+        for package in parsed.packages
+    ] == [
+        ("fx", 1, None),
+        ("keyv", 2, "5.0.0"),
+        ("@keyv/serialize", 2, "1.1.1"),
+        ("keyv", 2, "4.5.4"),
+        ("json-buffer", 2, "3.0.1"),
+        ("wsa", 72, None),
+    ]
+    assert ("keyv-next", "npm:keyv@5.0.0") in {
+        (dependency.name, dependency.literal) for dependency in parsed.dependencies
+    }
+
+
+@pytest.mark.parametrize("fmt", [2, 3])
+def test_real_bun_lockb_clean_versions_pass_and_patched_release_halts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, fmt: int
+) -> None:
+    import struct
+
+    policy = _policy(tmp_path / "ioc.txt", "keyv", "VERSION: npm | keyv | 6.0.0")
+    clean = tmp_path / "clean"
+    clean.mkdir()
+    (clean / "bun.lockb").write_bytes(_real_bun_lockb(fmt))
+    assert _scan_hits(clean, policy) == []
+    assert _run_main(monkeypatch, clean, policy, "--offline") == 0
+
+    # Rewrite the 4.5.4 record (package row 3) to 6.0.0, URL included.
+    data = bytearray(_real_bun_lockb(fmt))
+    count = struct.unpack_from("<Q", data, 86)[0]
+    field = "<QQQ" if fmt == 3 else "<III"
+    record = 128 + 16 * count + (16 + (56 if fmt == 3 else 48)) * 3
+    assert struct.unpack_from(field, data, record + 16) == (4, 5, 4)
+    struct.pack_into(field, data, record + 16, 6, 0, 0)
+    data = bytearray(data.replace(b"keyv/-/keyv-4.5.4.tgz", b"keyv/-/keyv-6.0.0.tgz"))
+    malicious = tmp_path / "malicious"
+    malicious.mkdir()
+    (malicious / "bun.lockb").write_bytes(bytes(data))
+    hits = _scan_hits(malicious, policy)
+    assert [(hit.ioc, hit.versions) for hit in hits] == [("keyv", ("6.0.0",))]
+    assert _run_main(monkeypatch, malicious, policy, "--offline") == 2
+
+    package_wide = _policy(tmp_path / "wide.txt", "json-buffer")
+    assert [hit.ioc for hit in _scan_hits(clean, package_wide)] == ["json-buffer"]
+
+
+@pytest.mark.parametrize("fmt", [2, 3])
+def test_bun_lockb_both_layouts_extract_exact_versions(
+    tmp_path: Path, fmt: int
+) -> None:
+    lockfile = tmp_path / "bun.lockb"
+    lockfile.write_bytes(_bun_lockb_bytes(
+        [_BUN_ROOT_ROW, _keyv_row((4, 5, 4)),
+         ("solidity-docgen", 2, (0, 6, 0), "beta.36",
+          "https://registry.npmjs.org/solidity-docgen/-/"
+          "solidity-docgen-0.6.0-beta.36.tgz")],
+        [("keyv", 2, "^4.5.0")],
+        fmt=fmt,
+    ))
+    assert ioc_scan._extract_bun_lockb_version_info(lockfile, "keyv") == (
+        ioc_scan.LockfilePackageVersions(versions=("4.5.4",))
+    )
+    assert ioc_scan._extract_bun_lockb_version_info(
+        lockfile, "solidity-docgen"
+    ) == ioc_scan.LockfilePackageVersions(versions=("0.6.0-beta.36",))
+
+
+@pytest.mark.parametrize(
+    "packages, dependencies",
+    [
+        # Version fields disagree with the fetched tarball URL.
+        ([_BUN_ROOT_ROW, _keyv_row((4, 5, 4), url_version="6.0.0")], []),
+        # Non-registry resolution (git) for the scoped identity.
+        ([_BUN_ROOT_ROW, ("keyv", 32, (0, 0, 0), "", "github.com/x/keyv")], []),
+        # Declared (non-peer) dependency with no resolved package record.
+        ([_BUN_ROOT_ROW], [("keyv", 2, "6.0.0")]),
+        # npm alias to the scoped identity with no resolved package record.
+        ([_BUN_ROOT_ROW], [("cache-store", 2, "npm:keyv@6.0.0")]),
+    ],
+)
+def test_bun_lockb_untrusted_evidence_cannot_clear_a_version_scoped_name(
+    tmp_path: Path,
+    packages: list[tuple[str, int, tuple[int, int, int], str, str]],
+    dependencies: list[tuple[str, int, str]],
+) -> None:
+    policy = _policy(tmp_path / "ioc.txt", "keyv", "VERSION: npm | keyv | 6.0.0")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "bun.lockb").write_bytes(_bun_lockb_bytes(packages, dependencies))
+    assert [hit.ioc for hit in _scan_hits(repo, policy)] == ["keyv"]
+
+
+def test_bun_lockb_peer_dependency_without_install_is_safe(tmp_path: Path) -> None:
+    policy = _policy(tmp_path / "ioc.txt", "keyv", "VERSION: npm | keyv | 6.0.0")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "bun.lockb").write_bytes(_bun_lockb_bytes(
+        [_BUN_ROOT_ROW], [("keyv", ioc_scan._BUN_DEPENDENCY_PEER, "*")]
+    ))
+    assert _scan_hits(repo, policy) == []
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        # truncated just before the recorded end of the tables
+        lambda data: data[:int.from_bytes(data[78:86], "little") - 4],
+        lambda data: data.replace(b"format-v0", b"format-v9", 1),  # header
+        lambda data: data[:42] + b"\x07" + data[43:],              # unknown format
+        lambda data: data.replace(b"1 sizeof", b"2 sizeof", 1),    # annotation
+    ],
+)
+def test_malformed_bun_lockb_fails_closed_but_still_surfaces_raw_names(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutate
+) -> None:
+    raw = mutate(_real_bun_lockb())
+    assert ioc_scan._parse_bun_lockb(raw) is None
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "bun.lockb").write_bytes(raw)
+    clean_policy = _policy(tmp_path / "ioc.txt", "never-present-package")
+    assert _run_main(monkeypatch, repo, clean_policy, "--offline") == 3
+    wide_policy = _policy(tmp_path / "wide.txt", "json-buffer")
+    assert _run_main(monkeypatch, repo, wide_policy, "--offline") == 2
+
+
+def test_bun_lockb_string_pointer_out_of_bounds_is_rejected() -> None:
+    import struct
+
+    data = bytearray(_bun_lockb_bytes([
+        _BUN_ROOT_ROW, ("a-long-package-name", 2, (1, 0, 0), "", ""),
+    ]))
+    name_at = 128 + 8
+    offset, length = struct.unpack_from("<II", data, name_at)
+    assert length & 0x80000000
+    struct.pack_into("<II", data, name_at, offset + 10_000, length)
+    assert ioc_scan._parse_bun_lockb(bytes(data)) is None
+
+
+@pytest.mark.parametrize("line_end", ["\r", "\u2028", "\u2029"])
+def test_bun_lock_line_comment_ends_where_bun_ends_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, line_end: str
+) -> None:
+    # Bun ends `//` at CR/LS/PS, so it reads keyv@6.0.0 and comments out the
+    # 4.5.4 decoy; ending the comment only at "\n" would read the decoy.
+    policy = _policy(tmp_path / "ioc.txt", "keyv", "VERSION: npm | keyv | 6.0.0")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "bun.lock").write_bytes((
+        '{"lockfileVersion": 1,\n'
+        ' "workspaces": {"": {"name": "root", "dependencies": {"keyv": "*"}}},\n'
+        ' "packages": {\n'
+        f'  "keyv": // x{line_end} ["keyv@6.0.0", "", {{}}, "sha512-MAL"] /*\n'
+        '         ["keyv@4.5.4", "", {}, "sha512-OK"] /* */\n'
+        ' }\n}\n'
+    ).encode("utf-8"))
+    assert _run_main(monkeypatch, repo, policy, "--offline") in (2, 3)
+    info = ioc_scan._extract_bun_lock_version_info(repo / "bun.lock", "keyv")
+    assert "4.5.4" not in info.versions
+
+
+def test_jsonc_rejects_commas_that_follow_no_value() -> None:
+    for text in ("[,]", "{,}", '{"a": [1,,]}'):
+        with pytest.raises(ValueError):
+            ioc_scan._load_jsonc(text)
+    assert ioc_scan._load_jsonc('{"a": [1,],}')[0] == {"a": [1]}
+
+
+@pytest.mark.parametrize(
+    "tarball",
+    [
+        "https://registry.npmjs.org/keyv/-/keyv-6.0.0.tgz",
+        "https://registry.npmjs.org/keyv/-/keyv-6.0.0.tgz?/keyv/-/keyv-4.5.4.tgz",
+        "https://registry.npmjs.org/keyv/-/keyv-6.0.0.tgz#/keyv/-/keyv-4.5.4.tgz",
+        "https://u:p@evil.example/keyv/-/keyv-4.5.4.tgz",
+        "https://evil.example/x/../keyv/-/keyv-4.5.4.tgz",
+        "https://evil.example/keyv/-/keyv%2D4.5.4.tgz",
+        "ftp://evil.example/keyv/-/keyv-4.5.4.tgz",
+    ],
+)
+def test_bun_tarball_url_must_be_exactly_the_recorded_release(
+    tmp_path: Path, tarball: str
+) -> None:
+    policy = _policy(tmp_path / "ioc.txt", "keyv", "VERSION: npm | keyv | 6.0.0")
+    text_repo = tmp_path / "text"
+    text_repo.mkdir()
+    (text_repo / "bun.lock").write_text(_bun_lock_text({
+        "keyv": ["keyv@4.5.4", tarball, {}, "sha512-x"],
+    }), encoding="utf-8")
+    assert [hit.ioc for hit in _scan_hits(text_repo, policy)] == ["keyv"]
+
+    binary_repo = tmp_path / "binary"
+    binary_repo.mkdir()
+    (binary_repo / "bun.lockb").write_bytes(_bun_lockb_bytes([
+        _BUN_ROOT_ROW, ("keyv", 2, (4, 5, 4), "", tarball),
+    ]))
+    assert [hit.ioc for hit in _scan_hits(binary_repo, policy)] == ["keyv"]
+
+
+def test_bun_custom_registry_tarball_of_the_same_release_is_trusted(
+    tmp_path: Path,
+) -> None:
+    policy = _policy(tmp_path / "ioc.txt", "keyv", "VERSION: npm | keyv | 6.0.0")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "bun.lock").write_text(_bun_lock_text({
+        "keyv": [
+            "keyv@4.5.4", "https://npm.example.com/keyv/-/keyv-4.5.4.tgz", {}, "x",
+        ],
+    }), encoding="utf-8")
+    assert _scan_hits(repo, policy) == []
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        ["harmless@1.0.0", "https://registry.npmjs.org/keyv/-/keyv-6.0.0.tgz", {}, "x"],
+        ["harmless@https://registry.npmjs.org/keyv/-/keyv-6.0.0.tgz", {}],
+    ],
+)
+def test_bun_lock_renamed_install_of_the_package_tarball_cannot_clear(
+    tmp_path: Path, record: list[object]
+) -> None:
+    policy = _policy(tmp_path / "ioc.txt", "keyv", "VERSION: npm | keyv | 6.0.0")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "bun.lock").write_text(json.dumps({
+        "lockfileVersion": 1,
+        "workspaces": {"": {"name": "root", "dependencies": {"harmless": "*"}}},
+        "packages": {"harmless": record},
+    }), encoding="utf-8")
+    assert [hit.ioc for hit in _scan_hits(repo, policy)] == ["keyv"]
+
+
+@pytest.mark.parametrize("tag", [2, 80])  # npm, remote tarball
+def test_bun_lockb_renamed_install_of_the_package_tarball_cannot_clear(
+    tmp_path: Path, tag: int
+) -> None:
+    policy = _policy(tmp_path / "ioc.txt", "keyv", "VERSION: npm | keyv | 6.0.0")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "bun.lockb").write_bytes(_bun_lockb_bytes([
+        _BUN_ROOT_ROW,
+        ("harmless", tag, (1, 0, 0), "",
+         "https://registry.npmjs.org/keyv/-/keyv-6.0.0.tgz"),
+    ]))
+    assert [hit.ioc for hit in _scan_hits(repo, policy)] == ["keyv"]
+
+
+def test_bun_lockb_repeated_string_pointers_cannot_amplify_memory() -> None:
+    import struct
+    import time
+
+    big = "a" * (1024 * 1024)
+    # The root's long name lands at string-buffer offset 0; the 1 MiB string
+    # (a package URL) follows it.
+    root_len = len(_BUN_ROOT_ROW[0])
+    rows = [_BUN_ROOT_ROW, ("x", 64, (0, 0, 0), "", big)]
+
+    def pointer(offset: int, size: int) -> bytes:
+        return struct.pack("<II", offset, size | 0x80000000)
+
+    # Identical pointers decode once: 2,000 references to the 1 MiB string.
+    same = [("y", 2, pointer(root_len, len(big)))] * 2000
+    started = time.monotonic()
+    assert ioc_scan._parse_bun_lockb(_bun_lockb_bytes(rows, same)) is not None
+    assert time.monotonic() - started < 5
+
+    # Distinct overlapping ranges would decode ~2 GiB: refuse instead.
+    overlapping = [
+        ("y", 2, pointer(root_len + i, len(big) - i)) for i in range(2000)
+    ]
+    started = time.monotonic()
+    assert ioc_scan._parse_bun_lockb(_bun_lockb_bytes(rows, overlapping)) is None
+    assert time.monotonic() - started < 5
+
+
+_ENCODED_KEYV_TARBALL = "https://registry.npmjs.org/%6beyv/-/%6beyv-6.0.0.tgz"
+
+
+@pytest.mark.parametrize(
+    "records",
+    [
+        ["keyv", "VERSION: npm | keyv | 6.0.0"],  # version-scoped
+        ["keyv"],                                  # package-wide
+    ],
+)
+def test_percent_encoded_tarball_of_the_package_is_still_seen(
+    tmp_path: Path, records: list[str]
+) -> None:
+    policy = _policy(tmp_path / "ioc.txt", *records)
+    text_repo = tmp_path / "text"
+    text_repo.mkdir()
+    (text_repo / "bun.lock").write_text(json.dumps({
+        "lockfileVersion": 1,
+        "workspaces": {"": {"name": "root", "dependencies": {"harmless": "*"}}},
+        "packages": {
+            "harmless": [
+                "harmless@1.0.0", _ENCODED_KEYV_TARBALL,
+                {"peerDependencies": {"keyv": "*"}}, "sha512-x",
+            ],
+        },
+    }), encoding="utf-8")
+    assert [hit.ioc for hit in _scan_hits(text_repo, policy)] == ["keyv"]
+
+    binary_repo = tmp_path / "binary"
+    binary_repo.mkdir()
+    (binary_repo / "bun.lockb").write_bytes(_bun_lockb_bytes([
+        _BUN_ROOT_ROW, ("harmless", 2, (1, 0, 0), "", _ENCODED_KEYV_TARBALL),
+    ]))
+    assert [hit.ioc for hit in _scan_hits(binary_repo, policy)] == ["keyv"]
+
+
+def test_local_directories_named_like_the_package_do_not_halt(
+    tmp_path: Path,
+) -> None:
+    policy = _policy(tmp_path / "ioc.txt", "keyv", "VERSION: npm | keyv | 6.0.0")
+    repo = tmp_path / "text"
+    repo.mkdir()
+    (repo / "bun.lock").write_text(json.dumps({
+        "lockfileVersion": 1,
+        "workspaces": {
+            "": {"name": "root", "dependencies": {"keyv": "4.5.4"}},
+            "packages/keyv": {"name": "@acme/keyv-adapter"},
+        },
+        "packages": {
+            "keyv": ["keyv@4.5.4", "", {}, "sha512-x"],
+            "@acme/keyv-adapter": ["@acme/keyv-adapter@workspace:packages/keyv"],
+            "local": ["local@file:vendor/keyv", {}],
+            "linked": ["linked@link:../keyv"],
+        },
+    }), encoding="utf-8")
+    assert _scan_hits(repo, policy) == []
+
+    binary_repo = tmp_path / "binary"
+    binary_repo.mkdir()
+    (binary_repo / "bun.lockb").write_bytes(_bun_lockb_bytes([
+        _BUN_ROOT_ROW, _keyv_row((4, 5, 4)),
+        ("adapter", 72, (0, 0, 0), "", "packages/keyv"),
+        ("vendored", 4, (0, 0, 0), "", "vendor/keyv"),
+    ], [("keyv", 2, "4.5.4")]))
+    assert _scan_hits(binary_repo, policy) == []
+
+
+def test_jsonc_normalizer_memory_stays_proportional_to_input() -> None:
+    import tracemalloc
+
+    text = (
+        '{"lockfileVersion":1,"workspaces":{"":{"name":"root"}},'
+        '"packages":{},"padding":[' + "0," * 524288 + "0,]}"
+    )
+    tracemalloc.start()
+    try:
+        data, duplicate = ioc_scan._load_jsonc(text)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert not duplicate and len(data["padding"]) == 524289
+    # The decoded list itself is ~8 bytes/element; the normalizer must not add
+    # per-character bookkeeping on top of it.
+    assert peak < 8 * len(text) + 8 * 524289 * 2
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://reader@registry.npmjs.org/keyv/-/keyv-6.0.0.tgz",
+        "https://a/b@host/keyv/-/keyv-6.0.0.tgz",
+        "https://u:p@registry.npmjs.org/%6beyv/-/%6beyv-6.0.0.tgz",
+    ],
+)
+@pytest.mark.parametrize(
+    "records", [["keyv", "VERSION: npm | keyv | 6.0.0"], ["keyv"]]
+)
+def test_url_credentials_cannot_hide_the_fetched_identity(
+    tmp_path: Path, url: str, records: list[str]
+) -> None:
+    policy = _policy(tmp_path / "ioc.txt", *records)
+    text_repo = tmp_path / "text"
+    text_repo.mkdir()
+    (text_repo / "bun.lock").write_text(json.dumps({
+        "lockfileVersion": 1,
+        "workspaces": {"": {"name": "root", "dependencies": {"harmless": "*"}}},
+        "packages": {"harmless": ["harmless@1.0.0", url, {}, "sha512-x"]},
+    }), encoding="utf-8")
+    assert [hit.ioc for hit in _scan_hits(text_repo, policy)] == ["keyv"]
+
+    binary_repo = tmp_path / "binary"
+    binary_repo.mkdir()
+    (binary_repo / "bun.lockb").write_bytes(_bun_lockb_bytes([
+        _BUN_ROOT_ROW, ("harmless", 2, (1, 0, 0), "", url),
+    ]))
+    assert [hit.ioc for hit in _scan_hits(binary_repo, policy)] == ["keyv"]
+
+
+def test_bun_lockb_shared_url_is_inspected_once_per_extraction(
+    tmp_path: Path,
+) -> None:
+    import struct
+    import time
+
+    rows = [_BUN_ROOT_ROW, ("other", 2, (1, 0, 0), "", "https://e.example/" + "a" * 1024 * 1024)]
+    rows += [("other", 2, (1, 0, 0), "", "")] * 20000
+    data = bytearray(_bun_lockb_bytes(rows, [("keyv", 16, "*")]))
+    count = len(rows)
+    record = 128 + 16 * count
+    shared = bytes(data[record + 72 + 8:record + 72 + 16])  # row 1's URL String
+    assert shared[7] & 0x80
+    for row in range(2, count):
+        at = record + 72 * row + 8
+        data[at:at + 8] = shared
+    lockfile = tmp_path / "bun.lockb"
+    lockfile.write_bytes(bytes(data))
+    assert ioc_scan._parse_bun_lockb(bytes(data)) is not None
+    started = time.monotonic()
+    info = ioc_scan._extract_bun_lockb_version_info(lockfile, "keyv")
+    assert time.monotonic() - started < 5
+    assert info == ioc_scan.LockfilePackageVersions()

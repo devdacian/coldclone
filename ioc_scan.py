@@ -23,7 +23,8 @@ clone and BEFORE sanitize + moving the tree into an isolation environment:
 This is an identity-and-version-exact denylist (high precision via exact
 matching; it catches only KNOWN drops, and its few residual false positives fail
 SAFE — see the accepted limitation below). Trusted exact-version evidence is
-extracted locally from npm-family and Cargo lockfiles. By default the scanner
+extracted locally from npm-family (package-lock, Yarn, pnpm, Bun text and
+binary) and Cargo lockfiles. By default the scanner
 also makes opportunistic exact-version OSV API queries for version-scoped
 packages; `--offline` disables those queries. It complements — never replaces —
 the auto-execution sanitizer
@@ -57,11 +58,15 @@ Bundled with the open-source coldclone tool; self-contained (no external deps).
 from __future__ import annotations
 
 import argparse
+import io
+import itertools
 import json
 import os
 import re
+import struct
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field, replace
 from datetime import date
@@ -84,6 +89,8 @@ _LOCKFILE_NAMES = frozenset({
     "go.sum",
     "composer.lock",
     "Gemfile.lock",
+    "bun.lock",
+    "bun.lockb",
 })
 
 # Python lockfiles. PyPI normalizes distribution names (PEP 503): case-insensitive
@@ -98,6 +105,8 @@ _LOCKFILE_POLICY_ECOSYSTEMS = {
     "package-lock.json": "npm",
     "yarn.lock": "npm",
     "pnpm-lock.yaml": "npm",
+    "bun.lock": "npm",
+    "bun.lockb": "npm",
     "Cargo.lock": "crates.io",
 }
 
@@ -134,6 +143,35 @@ _JSON_LOCKFILES = frozenset({
     "package-lock.json", "Pipfile.lock", "composer.lock",
 })
 _YAML_LOCKFILES = frozenset({"yarn.lock", "pnpm-lock.yaml"})
+# Bun's text lockfile is JSON with comments and trailing commas (JSONC).
+_JSONC_LOCKFILES = frozenset({"bun.lock"})
+_BUN_LOCK_VERSIONS = frozenset({0, 1, 2})
+_JSONC_LINE_COMMENT_END_RE = re.compile("[\n\r\u2028\u2029]")
+_JSONC_WHITESPACE_RE = re.compile(r"\s+")
+_URL_PATH_SPLIT_RE = re.compile(r"[/?#&=;:]")
+_JSONC_PLAIN_RE = re.compile(r'[^\s"/,\[\]{}]+')
+# Bun's binary lockfile (bun.lockb, Bun < 1.2 default). Layout per format:
+# semver.Version is 48 bytes in format 2 (u32 major/minor/patch) and 56 bytes in
+# format 3 (u64), which sizes the Resolution column of the package table.
+_BUN_LOCKB_HEADER = b"#!/usr/bin/env bun\nbun-lockfile-format-v0\n"
+_BUN_LOCKB_VERSION_SIZES = {2: 48, 3: 56}
+# Package table columns, in serialized order: name String (8), name_hash u64
+# (8), Resolution (16 + Version), dependencies slice (8), resolutions slice (8),
+# Meta (88), Bin (20), Scripts (49).
+_BUN_LOCKB_TAIL_COLUMN_SIZES = (8, 8, 88, 20, 49)
+# Buffers after the package table: trees, hoisted deps, resolutions,
+# dependencies, extern strings, string bytes (element sizes).
+_BUN_LOCKB_BUFFER_SIZES = (20, 4, 4, 26, 16, 1)
+_BUN_LOCKB_ANNOTATION_RE = re.compile(
+    rb"\n<[^>\n]{1,200}> ([0-9]{1,4}) sizeof, ([0-9]{1,2}) alignof\n"
+)
+_BUN_LOCKB_DECODE_FACTOR = 4
+_BUN_LOCKB_DECODE_FLOOR = 1024 * 1024
+_BUN_RESOLUTION_NPM = 2
+_BUN_RESOLUTION_ROOT = 1
+# root, folder, symlink, workspace: local sources that never fetch a release.
+_BUN_LOCAL_RESOLUTIONS = frozenset({1, 4, 64, 72})
+_BUN_DEPENDENCY_PEER = 1 << 4
 _YAML_IDENTITY_ESCAPE_RE = re.compile(
     r'"[^"\n]*\\(?:x[0-9A-Fa-f]{2}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8})'
 )
@@ -1304,12 +1342,559 @@ def _extract_cargo_lock_version_info(
     )
 
 
+def _jsonc_to_json(text: str) -> str:
+    """Strip JSONC comments and trailing commas outside strings (bun.lock).
+
+    Anything else non-standard is left for the strict JSON parser to reject, so
+    input Bun might accept but we cannot read fails closed rather than open.
+    Output is streamed in spans with O(1) bookkeeping, so memory stays a small
+    multiple of the input even for hostile token-dense files.
+    """
+    out = io.StringIO()
+    previous = ""            # last significant character written
+    pending_comma = False    # a comma not yet known to be trailing
+    before_comma = ""        # significant character preceding that comma
+    i = 0
+    length = len(text)
+
+    def emit(chunk: str) -> None:
+        nonlocal previous, pending_comma
+        if pending_comma:
+            # Only a comma that follows a value is a trailing comma; `[,]`
+            # and `{,}` keep theirs so the strict parser rejects them.
+            if not (chunk[0] in "}]" and before_comma not in ("", "[", "{", ",")):
+                out.write(",")
+            pending_comma = False
+        out.write(chunk)
+        previous = chunk[-1]
+
+    while i < length:
+        char = text[i]
+        if char == '"':
+            j = i + 1
+            while True:
+                close = text.find('"', j)
+                if close == -1:
+                    raise ValueError("unterminated string")
+                k = close - 1
+                while k > i and text[k] == "\\":
+                    k -= 1
+                if (close - 1 - k) % 2 == 0:
+                    break
+                j = close + 1
+            emit(text[i:close + 1])
+            i = close + 1
+        elif text.startswith("//", i):
+            # Bun ends a line comment at any of these; ending only at "\n"
+            # would let a crafted lockfile show us a different document.
+            match = _JSONC_LINE_COMMENT_END_RE.search(text, i)
+            i = length if match is None else match.start()
+        elif text.startswith("/*", i):
+            close = text.find("*/", i + 2)
+            if close == -1:
+                raise ValueError("unterminated comment")
+            out.write(" ")
+            i = close + 2
+        elif char == ",":
+            if pending_comma:
+                out.write(",")
+                previous = ","
+            before_comma = previous
+            pending_comma = True
+            i += 1
+        elif char in "[]{}":
+            emit(char)
+            i += 1
+        elif char.isspace():
+            match = _JSONC_WHITESPACE_RE.match(text, i)
+            assert match is not None
+            out.write(match.group())
+            i = match.end()
+        else:
+            match = _JSONC_PLAIN_RE.match(text, i)
+            stop = match.end() if match is not None else i + 1
+            emit(text[i:stop])
+            i = stop
+    if pending_comma:
+        out.write(",")
+    return out.getvalue()
+
+
+def _load_jsonc(text: str) -> tuple[object, bool]:
+    """Parse JSONC strictly. Returns (data, duplicate_key_seen)."""
+    duplicate_key = False
+
+    def object_pairs(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        nonlocal duplicate_key
+        result: dict[str, object] = {}
+        for key, value in pairs:
+            if key in result:
+                duplicate_key = True
+            result[key] = value
+        return result
+
+    def reject_constant(value: str) -> object:
+        raise ValueError(f"non-standard JSON constant: {value}")
+
+    data = json.loads(
+        _jsonc_to_json(text),
+        object_pairs_hook=object_pairs,
+        parse_constant=reject_constant,
+    )
+    return data, duplicate_key
+
+
+def _tarball_url_matches(url: str, name: str, version: str) -> bool:
+    """True only for a plain registry tarball URL of exactly name@version.
+
+    Bun downloads a recorded tarball URL verbatim, so a URL that disagrees with
+    the parsed identity (or hides a different file behind a query, fragment,
+    credentials, encoding, or dot segments) cannot vouch for that version.
+    """
+    if "?" in url or "#" in url or "%" in url or "\\" in url:
+        return False
+    try:
+        parts = urllib.parse.urlsplit(url)
+    except ValueError:
+        return False
+    if (
+        parts.scheme not in ("http", "https")
+        or not parts.netloc
+        or "@" in parts.netloc
+    ):
+        return False
+    if any(segment in (".", "..") for segment in parts.path.split("/")):
+        return False
+    basename = name.rsplit("/", 1)[-1]
+    return parts.path.endswith(f"/{name}/-/{basename}-{version}.tgz")
+
+
+def _percent_decodings(value: str) -> list[str]:
+    """`value` plus its percent-decoded forms (registries decode `%6b` -> `k`)."""
+    forms = [value]
+    for _ in range(3):
+        if "%" not in forms[-1]:
+            break
+        decoded = urllib.parse.unquote(forms[-1])
+        if decoded == forms[-1]:
+            break
+        forms.append(decoded)
+    return forms
+
+
+def _url_path_identities(value: str) -> set[str]:
+    """Package identities named by the path/query/fragment of any URL in value.
+
+    The generic tokenizer reads an `@` as a version separator, so URL
+    credentials (`https://user@host/keyv/-/...`) would truncate the path away.
+    Here everything after the authority is split on URL delimiters instead,
+    keeping `@scope/name` pairs together.
+    """
+    identities: set[str] = set()
+    for form in _percent_decodings(value):
+        scheme_end = form.find("://")
+        while scheme_end != -1:
+            rest = form[scheme_end + 3:]
+            slash = rest.find("/")
+            if slash != -1:
+                parts = [part for part in _URL_PATH_SPLIT_RE.split(rest[slash:]) if part]
+                for index, part in enumerate(parts):
+                    identities.add(part)
+                    if part.startswith("@") and index + 1 < len(parts):
+                        identities.add(f"{part}/{parts[index + 1]}")
+                    if "@" in part[1:]:
+                        identities.update(piece for piece in part.split("@") if piece)
+            scheme_end = form.find("://", scheme_end + 3)
+    return identities
+
+
+def _mentions_package(value: str, package: str) -> bool:
+    """True if the name gate would derive `package` from `value`, from its
+    percent-decoded form, or from any URL path inside it."""
+    return package in _url_path_identities(value) or any(
+        candidate == package
+        for form in _percent_decodings(value)
+        for token in _TOKEN_RE.findall(form)
+        for candidate in _candidates(token)
+    )
+
+
+def _is_local_bun_resolution(resolution: str) -> bool:
+    """workspace:/link:/directory file: resolutions never fetch a release."""
+    if resolution.startswith(("workspace:", "link:")):
+        return True
+    return resolution.startswith("file:") and not resolution.endswith(
+        (".tgz", ".tar.gz", ".tar")
+    )
+
+
+def _bun_identity(identity: str) -> tuple[str, str] | None:
+    """Split a bun.lock `name@resolution` identity; None if malformed."""
+    split_at = identity.find("@", 1 if identity.startswith("@") else 0)
+    if split_at <= 0 or split_at == len(identity) - 1:
+        return None
+    return identity[:split_at], identity[split_at + 1:]
+
+
+def _bun_lock_key_package(key: str) -> str:
+    """Return the installed package name at the end of a bun.lock path key."""
+    parts = key.split("/")
+    if len(parts) >= 2 and parts[-2].startswith("@"):
+        return f"{parts[-2]}/{parts[-1]}"
+    return parts[-1]
+
+
+def _bun_lock_declares(
+    dependencies: object, package: str, *, untrusted_on_malformed: bool = True
+) -> bool | None:
+    """True if a dependency map installs `package` (by name or npm alias).
+
+    Returns None for a malformed map so the caller can refuse to clear.
+    """
+    if dependencies is None:
+        return False
+    if not isinstance(dependencies, dict):
+        return None if untrusted_on_malformed else False
+    for name, spec in dependencies.items():
+        if name == package:
+            return True
+        parsed = _npm_alias_target(spec)
+        if parsed is not None and parsed[0] == package:
+            return True
+    return False
+
+
+def _extract_bun_lock_version_info(
+    lockfile: Path, package: str, text: str | None = None
+) -> LockfilePackageVersions:
+    try:
+        if text is None:
+            # Decode bytes ourselves: text-mode reads translate a bare "\r",
+            # which would make us parse a different document than ioc_grep.
+            with lockfile.open("rb") as stream:
+                raw = stream.read(_LOCKFILE_SIZE_LIMIT + 1)
+            if len(raw) > _LOCKFILE_SIZE_LIMIT:
+                return LockfilePackageVersions(mixed_or_untrusted=True)
+            text = raw.decode("utf-8", errors="strict")
+        data, duplicate_key = _load_jsonc(text)
+    except (OSError, UnicodeError, ValueError, RecursionError):
+        return LockfilePackageVersions(mixed_or_untrusted=True)
+    if duplicate_key or not isinstance(data, dict):
+        return LockfilePackageVersions(mixed_or_untrusted=True)
+    lockfile_version = data.get("lockfileVersion")
+    packages = data.get("packages")
+    if (
+        type(lockfile_version) is not int
+        or lockfile_version not in _BUN_LOCK_VERSIONS
+        or not isinstance(packages, dict)
+    ):
+        return LockfilePackageVersions(mixed_or_untrusted=True)
+
+    versions: set[str] = set()
+    untrusted = False
+    declared = False
+    for key, value in packages.items():
+        key_package = _bun_lock_key_package(key)
+        identity = None
+        if isinstance(value, list) and value and isinstance(value[0], str):
+            identity = _bun_identity(value[0])
+        if identity is None:
+            if key_package == package:
+                untrusted = True
+            continue
+        name, resolution = identity
+        tarball = value[1] if len(value) >= 2 and isinstance(value[1], str) else ""
+        if name != package:
+            fetches = not _is_local_bun_resolution(resolution)
+            if key_package == package or (fetches and (
+                _mentions_package(tarball, package)
+                or _mentions_package(resolution, package)
+            )):
+                # The key or the fetched tarball names the package while the
+                # record installs another identity: never let an alias or a
+                # renamed tarball stand in for the real release.
+                untrusted = True
+            continue
+        # npm records are [identity, registry/tarball URL, metadata, integrity];
+        # Bun writes "" for the default registry and downloads any other value
+        # verbatim, so it must be this exact release's tarball. Any other
+        # resolution (workspace:, link:, file:, git, tarball URL) has no
+        # registry version to compare with the denylist.
+        if (
+            _is_exact_registry_version(resolution)
+            and len(value) >= 2
+            and isinstance(value[1], str)
+            and (not tarball or _tarball_url_matches(tarball, package, resolution))
+        ):
+            versions.add(resolution)
+        else:
+            untrusted = True
+    workspaces = data.get("workspaces", {})
+    if not isinstance(workspaces, dict):
+        untrusted = True
+    else:
+        for workspace in workspaces.values():
+            if not isinstance(workspace, dict):
+                untrusted = True
+                continue
+            for field_name in (
+                "dependencies", "devDependencies", "optionalDependencies"
+            ):
+                result = _bun_lock_declares(workspace.get(field_name), package)
+                if result is None:
+                    untrusted = True
+                elif result:
+                    declared = True
+    for value in packages.values():
+        if isinstance(value, list):
+            for item in value:
+                if isinstance(item, dict):
+                    for field_name in ("dependencies", "optionalDependencies"):
+                        if _bun_lock_declares(
+                            item.get(field_name), package,
+                            untrusted_on_malformed=False,
+                        ):
+                            declared = True
+    if declared and not versions:
+        # A dependency is declared but no install record establishes which
+        # release Bun would fetch; that cannot be certified as a safe version.
+        untrusted = True
+    return LockfilePackageVersions(
+        versions=tuple(sorted(versions)), mixed_or_untrusted=untrusted
+    )
+
+
+@dataclass(frozen=True)
+class _BunLockbPackage:
+    name: str
+    resolution_tag: int
+    version: str | None  # exact registry version, npm resolutions only
+    url: str
+
+
+@dataclass(frozen=True)
+class _BunLockbDependency:
+    name: str
+    behavior: int
+    literal: str
+
+
+@dataclass(frozen=True)
+class _BunLockb:
+    packages: tuple[_BunLockbPackage, ...]
+    dependencies: tuple[_BunLockbDependency, ...]
+
+
+def _parse_bun_lockb(data: bytes) -> _BunLockb | None:
+    """Parse the package and dependency tables of a binary bun.lockb.
+
+    Every offset, length, column size, and buffer annotation is validated; any
+    deviation returns None so the caller fails closed instead of guessing.
+    """
+    header_len = len(_BUN_LOCKB_HEADER)
+    if not data.startswith(_BUN_LOCKB_HEADER) or len(data) < header_len + 84:
+        return None
+    (format_version,) = struct.unpack_from("<I", data, header_len)
+    version_size = _BUN_LOCKB_VERSION_SIZES.get(format_version)
+    if version_size is None:
+        return None
+    pos = header_len + 4 + 32  # format + meta hash
+    (total_end,) = struct.unpack_from("<Q", data, pos)
+    pos += 8
+    if total_end > len(data):
+        return None
+    count, alignment, field_count, begin, end = struct.unpack_from(
+        "<QQQQQ", data, pos
+    )
+    pos += 40
+    resolution_size = 16 + version_size
+    package_size = 8 + 8 + resolution_size + sum(_BUN_LOCKB_TAIL_COLUMN_SIZES)
+    if (
+        alignment != 8
+        or field_count != 8
+        or count == 0
+        or begin != (pos + 7) // 8 * 8
+        or end != begin + count * package_size
+        or end > total_end
+    ):
+        return None
+
+    buffers: list[bytes] = []
+    pos = end
+    for element_size in _BUN_LOCKB_BUFFER_SIZES:
+        if pos + 16 > total_end:
+            return None
+        start, stop = struct.unpack_from("<QQ", data, pos)
+        annotation = _BUN_LOCKB_ANNOTATION_RE.match(data, pos + 16)
+        if annotation is None or int(annotation.group(1)) != element_size:
+            return None
+        annotation_end = annotation.end()
+        if not (
+            annotation_end <= start <= stop <= total_end
+            and start - annotation_end < 16
+            and (stop - start) % element_size == 0
+        ):
+            return None
+        buffers.append(data[start:stop])
+        pos = stop
+    dependency_bytes, string_bytes = buffers[3], buffers[5]
+
+    # Pointers may repeat or overlap, so a small file could otherwise decode
+    # into an enormous volume of strings. Real lockfiles decode to well under
+    # their own size; anything far beyond that fails closed.
+    decode_budget = max(
+        _BUN_LOCKB_DECODE_FACTOR * len(data), _BUN_LOCKB_DECODE_FLOOR
+    )
+    decoded: dict[bytes, str] = {}
+
+    def string_at(raw: bytes) -> str:
+        nonlocal decode_budget
+        cached = decoded.get(raw)
+        if cached is not None:
+            return cached
+        if raw[7] & 0x80 == 0:
+            value = raw.split(b"\0", 1)[0]
+        else:
+            offset, size = struct.unpack("<II", raw)
+            size &= 0x7FFFFFFF
+            if offset + size > len(string_bytes):
+                raise ValueError("string out of bounds")
+            decode_budget -= size
+            if decode_budget < 0:
+                raise ValueError("string decode budget exceeded")
+            value = string_bytes[offset:offset + size]
+        text = value.decode("utf-8", errors="strict")
+        decoded[raw] = text
+        return text
+
+    names_at = begin
+    resolutions_at = begin + 16 * count
+    packages: list[_BunLockbPackage] = []
+    dependencies: list[_BunLockbDependency] = []
+    try:
+        for index in range(count):
+            name = string_at(data[names_at + 8 * index:names_at + 8 * index + 8])
+            record = resolutions_at + resolution_size * index
+            tag = data[record]
+            url = string_at(data[record + 8:record + 16])
+            version: str | None = None
+            if tag == _BUN_RESOLUTION_NPM:
+                at = record + 16
+                if format_version == 3:
+                    major, minor, patch = struct.unpack_from("<QQQ", data, at)
+                    tag_at = at + 24
+                else:
+                    major, minor, patch = struct.unpack_from("<III", data, at)
+                    tag_at = at + 16
+                pre = string_at(data[tag_at:tag_at + 8])
+                build = string_at(data[tag_at + 16:tag_at + 24])
+                candidate = f"{major}.{minor}.{patch}"
+                if pre:
+                    candidate += f"-{pre}"
+                if build:
+                    candidate += f"+{build}"
+                if _is_exact_registry_version(candidate):
+                    version = candidate
+            if index == 0 and tag != _BUN_RESOLUTION_ROOT:
+                return None
+            packages.append(_BunLockbPackage(name, tag, version, url))
+        for offset in range(0, len(dependency_bytes), 26):
+            raw = dependency_bytes[offset:offset + 26]
+            dependencies.append(_BunLockbDependency(
+                name=string_at(raw[0:8]),
+                behavior=raw[16],
+                literal=string_at(raw[18:26]),
+            ))
+    except (ValueError, UnicodeError, struct.error):
+        return None
+    return _BunLockb(tuple(packages), tuple(dependencies))
+
+
+def _bun_lockb_registry_version(package: _BunLockbPackage) -> str | None:
+    """Exact registry version of an npm resolution, cross-checked with its URL."""
+    if package.resolution_tag != _BUN_RESOLUTION_NPM or package.version is None:
+        return None
+    if package.url and not _tarball_url_matches(
+        package.url, package.name, package.version
+    ):
+        return None
+    return package.version
+
+
+def _bun_lockb_lines(parsed: _BunLockb) -> list[str]:
+    """Distinct identity-bearing strings of a parsed bun.lockb (name gate)."""
+    lines: dict[str, None] = {}
+    for package in parsed.packages:
+        lines[package.name] = None
+        if package.url:
+            lines[package.url] = None
+    for dependency in parsed.dependencies:
+        lines[dependency.name] = None
+        lines[dependency.literal] = None
+    return list(lines)
+
+
+def _extract_bun_lockb_version_info(
+    lockfile: Path, package: str, text: str | None = None
+) -> LockfilePackageVersions:
+    try:
+        if text is not None:
+            data = text.encode("latin-1")  # ioc_grep decodes bun.lockb losslessly
+        else:
+            with lockfile.open("rb") as stream:
+                data = stream.read(_LOCKFILE_SIZE_LIMIT + 1)
+            if len(data) > _LOCKFILE_SIZE_LIMIT:
+                return LockfilePackageVersions(mixed_or_untrusted=True)
+    except (OSError, UnicodeError):
+        return LockfilePackageVersions(mixed_or_untrusted=True)
+    parsed = _parse_bun_lockb(data)
+    if parsed is None:
+        return LockfilePackageVersions(mixed_or_untrusted=True)
+    versions: set[str] = set()
+    untrusted = False
+    checked_urls: set[str] = set()
+    for record in parsed.packages:
+        if record.name != package:
+            if (
+                record.resolution_tag not in _BUN_LOCAL_RESOLUTIONS
+                and record.url not in checked_urls
+            ):
+                # Rows may share one (possibly huge) URL string: inspect each
+                # distinct URL once so shared pointers cannot amplify work.
+                checked_urls.add(record.url)
+                if _mentions_package(record.url, package):
+                    # Another identity whose fetched tarball/source names the
+                    # package: a renamed install cannot clear the name hit.
+                    untrusted = True
+            continue
+        version = _bun_lockb_registry_version(record)
+        if version is None:
+            untrusted = True
+        else:
+            versions.add(version)
+    declared = any(
+        (dependency.name == package and not dependency.behavior & _BUN_DEPENDENCY_PEER)
+        or (
+            (alias := _npm_alias_target(dependency.literal)) is not None
+            and alias[0] == package
+        )
+        for dependency in parsed.dependencies
+    )
+    if declared and not versions:
+        untrusted = True
+    return LockfilePackageVersions(
+        versions=tuple(sorted(versions)), mixed_or_untrusted=untrusted
+    )
+
+
 _LOCKFILE_VERSION_EXTRACTORS: dict[
     str, Callable[[Path, str, str | None], LockfilePackageVersions]
 ] = {
     "package-lock.json": _extract_package_lock_version_info,
     "yarn.lock": _extract_yarn_lock_version_info,
     "pnpm-lock.yaml": _extract_pnpm_lock_version_info,
+    "bun.lock": _extract_bun_lock_version_info,
+    "bun.lockb": _extract_bun_lockb_version_info,
     "Cargo.lock": _extract_cargo_lock_version_info,
 }
 assert set(_LOCKFILE_VERSION_EXTRACTORS) == set(_LOCKFILE_POLICY_ECOSYSTEMS)
@@ -1548,35 +2133,68 @@ def ioc_grep(
             if len(raw) > _LOCKFILE_SIZE_LIMIT:
                 unreadable.append(lf)
                 continue
-            text = raw.decode(
-                "utf-8", errors="strict" if lf.name in _JSON_LOCKFILES else "replace"
-            )
+            if lf.name == "bun.lockb":
+                # Binary: latin-1 is a lossless bytes<->str mapping, so the
+                # exact extractor can recover the original bytes later.
+                text = raw.decode("latin-1")
+            else:
+                strict = lf.name in _JSON_LOCKFILES or lf.name in _JSONC_LOCKFILES
+                text = raw.decode("utf-8", errors="strict" if strict else "replace")
         except (OSError, UnicodeError):
             unreadable.append(lf)
             continue
         is_pypi = lf.name in _PYPI_LOCKFILES
+        is_bun = lf.name in ("bun.lock", "bun.lockb")
         recorded_in_file: set[str] = set()
 
         def record_candidates(value: str, line_no: int) -> None:
-            for tok in _TOKEN_RE.findall(value):
-                for cand in _candidates(tok):
-                    matched = None
-                    if cand in iocs:
-                        matched = cand
-                    elif is_pypi:
-                        matched = iocs_pep503.get(_pep503(cand))
-                    if matched and matched not in recorded_in_file:
-                        entry = iocs[matched]
-                        hits.append(IocHit(
-                            lockfile=lf,
-                            ioc=entry.name,
-                            lockfile_line_no=line_no,
-                            ioc_line_no=entry.line_no,
-                            version_evidence=entry.version_evidence,
-                            affected_set_complete=entry.affected_set_complete,
-                            lockfile_text=text,
-                        ))
-                        recorded_in_file.add(matched)
+            # Bun downloads recorded tarball URLs verbatim and registries
+            # percent-decode paths, so `%6beyv` must still surface `keyv`,
+            # and URL credentials must not hide the path from the tokenizer.
+            forms = _percent_decodings(value) if is_bun else (value,)
+            candidates = (
+                cand
+                for form in forms
+                for tok in _TOKEN_RE.findall(form)
+                for cand in _candidates(tok)
+            )
+            if is_bun and "://" in value:
+                candidates = itertools.chain(
+                    candidates, sorted(_url_path_identities(value))
+                )
+            for cand in candidates:
+                matched = None
+                if cand in iocs:
+                    matched = cand
+                elif is_pypi:
+                    matched = iocs_pep503.get(_pep503(cand))
+                if matched and matched not in recorded_in_file:
+                    entry = iocs[matched]
+                    hits.append(IocHit(
+                        lockfile=lf,
+                        ioc=entry.name,
+                        lockfile_line_no=line_no,
+                        ioc_line_no=entry.line_no,
+                        version_evidence=entry.version_evidence,
+                        affected_set_complete=entry.affected_set_complete,
+                        lockfile_text=text,
+                    ))
+                    recorded_in_file.add(matched)
+
+        if lf.name == "bun.lockb":
+            parsed = _parse_bun_lockb(raw)
+            if parsed is None:
+                # Surface any raw identity first, but an unparsed binary
+                # lockfile cannot be certified clean.
+                for line in text.splitlines():
+                    record_candidates(line, 0)
+                unreadable.append(lf)
+                continue
+            # Tokenize parsed identities, not raw bytes: the string buffer is
+            # unseparated, so raw runs can merge adjacent names.
+            for line in _bun_lockb_lines(parsed):
+                record_candidates(line, 0)
+            continue
 
         for line_no, line in enumerate(text.splitlines(), start=1):
             record_candidates(line, line_no)
@@ -1587,7 +2205,7 @@ def ioc_grep(
             unreadable.append(lf)
             continue
 
-        if lf.name in _JSON_LOCKFILES:
+        if lf.name in _JSON_LOCKFILES or lf.name in _JSONC_LOCKFILES:
             duplicate_key = False
 
             def object_pairs(
@@ -1602,7 +2220,10 @@ def ioc_grep(
                 return result
 
             try:
-                decoded = json.loads(text, object_pairs_hook=object_pairs)
+                if lf.name in _JSONC_LOCKFILES:
+                    decoded, duplicate_key = _load_jsonc(text)
+                else:
+                    decoded = json.loads(text, object_pairs_hook=object_pairs)
             except (ValueError, RecursionError):
                 # Raw scanning still gets to surface a definitive hit first, but
                 # malformed structured input cannot be certified clean: escaped

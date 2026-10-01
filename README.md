@@ -17,8 +17,8 @@ virtual machine, container, or sandbox), not a replacement for one.
   files it must leave live so you can read scope.
 - **`ioc_scan.py`** — a known-malicious-dependency tripwire that greps lockfiles
   (npm / PyPI / cargo / Go / …) against a maintained indicator list. It reports
-  trusted exact malicious-version evidence for npm-family and Cargo lockfiles
-  when available, while preserving package-wide hits for all-malicious
+  trusted exact malicious-version evidence for npm-family (including Bun) and
+  Cargo lockfiles when available, while preserving package-wide hits for all-malicious
   identities. Read-only; no install or execution. Its optional OSV fallback uses
   the network by default and can be disabled with `--offline`.
 - **`coldclone.sh`** — orchestrates a hardened clone (symlinks off, LFS filters
@@ -38,8 +38,12 @@ provenance but are not required for clearance.
 
 Exact extraction covers package-lock, Yarn Classic, structurally validated Yarn
 Berry `npm:` locators, structurally validated pnpm package keys/importer
-versions, and Cargo. Registry tarball, source, and integrity metadata are ignored
-because it does not determine the locked package/version identity. By default,
+versions, Bun (`bun.lock` text and the binary `bun.lockb`, formats 2 and 3), and
+Cargo. Registry tarball, source, and integrity metadata are ignored
+because it does not determine the locked package/version identity; the one
+exception is `bun.lockb`, where a recorded tarball URL must agree with the
+parsed name and version or that record is treated as untrusted. A `bun.lockb`
+whose binary layout does not validate fails the gate closed. By default,
 version-scoped disjoint matches also receive an
 opportunistic exact-version OSV API lookup; only a malicious-code advisory adds
 a hit. A clean response or unavailable OSV leaves the local exact-denylist
