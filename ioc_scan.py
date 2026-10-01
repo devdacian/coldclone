@@ -60,6 +60,7 @@ from __future__ import annotations
 import argparse
 import io
 import itertools
+import posixpath
 import json
 import os
 import re
@@ -143,6 +144,19 @@ _JSON_LOCKFILES = frozenset({
     "package-lock.json", "Pipfile.lock", "composer.lock",
 })
 _YAML_LOCKFILES = frozenset({"yarn.lock", "pnpm-lock.yaml"})
+# Public registries a fresh npm/Yarn/pnpm/Bun install uses by default. Fetch
+# URLs on any other host are surfaced as a non-gating advisory.
+_DEFAULT_NPM_REGISTRY_HOSTS = frozenset({"registry.npmjs.org", "registry.yarnpkg.com"})
+_URL_SCHEME_CHARS = frozenset(
+    "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789+.-"
+)
+_URL_SPECIAL_SCHEMES = frozenset({"http", "https", "ws", "wss", "ftp", "file"})
+_URL_AUTHORITY_END_RE = re.compile(r"[/?#\\\s\"'<>{},]")
+_YARN_BERRY_METADATA_RE = re.compile(
+    r"^(?:__metadata|\"__metadata\"|'__metadata')\s*:", re.MULTILINE
+)
+_HOST_RE = re.compile(r"\[[0-9A-Fa-f:.]+\]|[^\s\"'<>{},:/?#\\\[\]]*")
+_REMOTE_SOURCE_DISPLAY_LIMIT = 20
 # Bun's text lockfile is JSON with comments and trailing commas (JSONC).
 _JSONC_LOCKFILES = frozenset({"bun.lock"})
 _BUN_LOCK_VERSIONS = frozenset({0, 1, 2})
@@ -172,9 +186,7 @@ _BUN_RESOLUTION_ROOT = 1
 # root, folder, symlink, workspace: local sources that never fetch a release.
 _BUN_LOCAL_RESOLUTIONS = frozenset({1, 4, 64, 72})
 _BUN_DEPENDENCY_PEER = 1 << 4
-_YAML_IDENTITY_ESCAPE_RE = re.compile(
-    r'"[^"\n]*\\(?:x[0-9A-Fa-f]{2}|u[0-9A-Fa-f]{4}|U[0-9A-Fa-f]{8})'
-)
+_YAML_LINE_BREAK_RE = re.compile(r"\r\n|\r|\n")
 _CARGO_PACKAGE_HEADER_RE = re.compile(
     r"^[ \t]*\[\[[ \t]*package[ \t]*\]\][ \t]*(?:#.*)?$"
 )
@@ -592,7 +604,9 @@ def _extract_package_lock_version_info(
     alias_referenced = False
     alias_resolved = False
 
-    def consider(value: object, *, alias_version: str | None = None) -> None:
+    def consider(
+        value: object, *, alias_version: str | None = None, alias: bool = False
+    ) -> None:
         nonlocal untrusted, alias_resolved
         if not isinstance(value, dict):
             untrusted = True
@@ -600,10 +614,41 @@ def _extract_package_lock_version_info(
         version = alias_version if alias_version is not None else value.get("version")
         if isinstance(version, str) and _is_exact_registry_version(version):
             versions.add(version)
-            if alias_version is not None:
+            if alias or alias_version is not None:
                 alias_resolved = True
+            for field_name in ("resolved", "_resolved"):
+                resolved = value.get(field_name)
+                if resolved is not None and not (
+                    isinstance(resolved, str)
+                    and _tarball_url_matches(resolved, package, version)
+                ):
+                    # npm downloads `resolved` (or, without it, `_resolved`)
+                    # verbatim, and the attacker also writes `integrity`: it
+                    # must be exactly this release's tarball.
+                    untrusted = True
+            source = value.get("from")
+            if source is not None and (
+                not isinstance(source, str) or _has_fetch_marker(source)
+                or source.startswith("file:")
+            ):
+                # Legacy `from` is fetched when `resolved` is absent.
+                untrusted = True
         else:
             untrusted = True
+
+    def check_foreign(value: object) -> None:
+        """A record installing another identity must not fetch the package."""
+        nonlocal untrusted
+        if not isinstance(value, dict) or value.get("link") is True:
+            return
+        for field_name in ("resolved", "_resolved", "from", "version"):
+            spec = value.get(field_name)
+            if (
+                isinstance(spec, str)
+                and not _is_local_directory_resolution(spec)
+                and _mentions_package(spec, package)
+            ):
+                untrusted = True
 
     def alias_for(value: object) -> str | None:
         nonlocal alias_referenced
@@ -620,27 +665,37 @@ def _extract_package_lock_version_info(
             return
         for key, value in packages.items():
             normalized = str(key).replace("\\", "/")
+            if normalized and posixpath.normpath(normalized) != normalized:
+                # npm resolves `node_modules/./keyv` or `a/../keyv` to the
+                # installed location; npm never writes such keys.
+                untrusted = True
             if normalized == f"node_modules/{package}" or normalized.endswith(
                 f"/node_modules/{package}"
             ):
+                installed = value.get("name") if isinstance(value, dict) else None
+                if isinstance(installed, str) and installed != package:
+                    # An alias location: it installs `name`, not `package`.
+                    check_foreign(value)
+                    continue
                 consider(value)
                 continue
             if not isinstance(value, dict) or _NM_MARKER not in normalized:
+                check_foreign(value)
                 continue
             # npm aliases are installed under the alias location, while either
             # the record's `name` or its `npm:<target>@<version>` value carries
             # the actual registry identity.
+            owned = False
             if value.get("name") == package:
                 alias_referenced = True
-                version = value.get("version")
-                if isinstance(version, str) and _is_exact_registry_version(version):
-                    versions.add(version)
-                    alias_resolved = True
-                else:
-                    untrusted = True
+                owned = True
+                consider(value, alias=True)
             alias_version = alias_for(value.get("version"))
             if alias_version is not None:
+                owned = True
                 consider(value, alias_version=alias_version)
+            if not owned:
+                check_foreign(value)
 
     def scan_dependencies(dependencies: object) -> None:
         nonlocal untrusted
@@ -651,12 +706,23 @@ def _extract_package_lock_version_info(
         while stack:
             deps = stack.pop()
             if package in deps:
-                consider(deps.get(package))
-            for value in deps.values():
+                local = deps.get(package)
+                target = (
+                    _npm_alias_target(local.get("version"))
+                    if isinstance(local, dict) else None
+                )
+                if target is not None and target[0] != package:
+                    # An alias local name: it installs `target`, not `package`.
+                    check_foreign(local)
+                else:
+                    consider(local)
+            for name, value in deps.items():
                 if isinstance(value, dict):
                     alias_version = alias_for(value.get("version"))
                     if alias_version is not None:
                         consider(value, alias_version=alias_version)
+                    elif name != package:
+                        check_foreign(value)
                 if isinstance(value, dict) and isinstance(
                     value.get("dependencies"), dict
                 ):
@@ -723,6 +789,47 @@ def _yarn_alias_target(descriptor: str) -> str | None:
     return target
 
 
+_YARN_CLASSIC_SHA1_FRAGMENT_RE = re.compile(r"[0-9a-f]{40}")
+
+
+def _yarn_classic_resolved_matches(url: str, name: str, version: str) -> bool:
+    """Yarn Classic appends `#<sha1>` to the registry tarball URL it fetches."""
+    base, separator, fragment = url.partition("#")
+    if separator and _YARN_CLASSIC_SHA1_FRAGMENT_RE.fullmatch(fragment) is None:
+        return False
+    return _tarball_url_matches(base, name, version)
+
+
+_FETCH_MARKER_RE = re.compile(
+    # Remote and VCS sources a package manager fetches as-is (a semver range
+    # or `npm:` locator never contains one of these). scp-style `git@host:` only where a source starts, so a package named
+    # `@changesets/git@^3` is not mistaken for one.
+    r"://|github:|gitlab:|bitbucket:|git\+|(?:^|[@\s\"':])git@"
+    # a local archive (directories are exempt: they are not releases)
+    r"|file:[^\s\"']*\.(?:tgz|tar\.gz|tar)(?![A-Za-z0-9])",
+    re.IGNORECASE,
+)
+
+
+def _has_fetch_marker(text: str) -> bool:
+    """A remote/VCS/archive source marker, as a URL parser sees the text."""
+    return _FETCH_MARKER_RE.search(_canonical_url_text(text)) is not None
+
+
+def _yarn_fetches_package(
+    header: str, body: list[str], package: str
+) -> bool:
+    """True if a remote/VCS source in another identity's block names `package`.
+
+    Whole lines are checked (not just the `resolved`/`resolution` field) so a
+    quoted or otherwise unusual key spelling cannot hide the fetched source.
+    """
+    return any(
+        _has_fetch_marker(line) and _mentions_package(line, package)
+        for line in (header, *body)
+    )
+
+
 def _extract_yarn_classic_version_info(
     lines: list[str], package: str
 ) -> LockfilePackageVersions:
@@ -730,9 +837,19 @@ def _extract_yarn_classic_version_info(
     untrusted = False
     for header, body in _yarn_top_level_blocks(lines):
         descriptors = header.split(",")
-        names = {_yarn_descriptor_name(part) for part in descriptors}
+        # An alias descriptor (`local@npm:target@range`) installs `target`;
+        # its local name is not an install of a package by that name.
         alias_targets = {_yarn_alias_target(part) for part in descriptors}
+        names = {
+            _yarn_descriptor_name(part)
+            for part in descriptors
+            if _yarn_alias_target(part) is None
+        }
         if package not in names and package not in alias_targets:
+            # Yarn fetches `resolved` verbatim: another identity whose tarball
+            # names the package is a renamed install, not unrelated metadata.
+            if _yarn_fetches_package(header, body, package):
+                untrusted = True
             continue
 
         populated = [line for line in body if line.strip()]
@@ -747,6 +864,23 @@ def _extract_yarn_classic_version_info(
         version_values = [
             match.group(1) for line in body if (match := version_re.fullmatch(line))
         ]
+        # Yarn's parser also accepts a quoted key and `key: value`.
+        resolved_values = [
+            _strip_balanced_yaml_scalar(value)
+            for line in body
+            if line.startswith(" " * direct_indent)
+            and not line[direct_indent:direct_indent + 1].isspace()
+            and (value := _yarn_field_value(line.strip(), "resolved")) is not None
+        ]
+        if sum(
+            _has_fetch_marker(line)
+            for line in body
+            if line.startswith(" " * direct_indent)
+            and not line[direct_indent:direct_indent + 1].isspace()
+        ) > len(resolved_values):
+            # A remote source in a field of this block other than the one
+            # recognized `resolved` (nested dependency specs may be git URLs).
+            untrusted = True
         if len(version_values) != 1:
             untrusted = True
             for version in version_values:
@@ -754,8 +888,25 @@ def _extract_yarn_classic_version_info(
                     versions.add(version)
             continue
         version = version_values[0]
+        if any(
+            _has_fetch_marker(part) or "@file:" in part
+            for part in descriptors
+        ) or not resolved_values:
+            # Without `resolved`, Yarn re-resolves the descriptor (fetching a
+            # URL descriptor verbatim), so `version` proves nothing.
+            untrusted = True
         if _is_exact_registry_version(version):
             versions.add(version)
+            if len(resolved_values) > 1 or (
+                resolved_values
+                and (
+                    resolved_values[0] is None
+                    or not _yarn_classic_resolved_matches(
+                        resolved_values[0], package, version
+                    )
+                )
+            ):
+                untrusted = True
         else:
             untrusted = True
     return LockfilePackageVersions(
@@ -772,6 +923,40 @@ def _strip_balanced_yaml_scalar(value: str) -> str | None:
             return None
         value = value[1:-1]
     return value
+
+
+def _yarn_field_value(content: str, key: str) -> str | None:
+    """Raw value of a stripped Yarn line that is the field `key`, else None.
+
+    Accepts Classic `key value`, YAML `key: value`, and a quoted key, by plain
+    string checks (no backtracking regex over hostile whitespace).
+    """
+    for spelled in (key, f'"{key}"', f"'{key}'"):
+        if not content.startswith(spelled):
+            continue
+        rest = content[len(spelled):]
+        if rest[:1] == ":":
+            rest = rest[1:]
+        elif not rest[:1].isspace():
+            continue
+        rest = rest.strip()
+        return rest or None
+    return None
+
+
+def _yarn_has_unrecognized_top_level(lines: list[str]) -> bool:
+    """A top-level line that is not a `header:` (e.g. `key: # comment`).
+
+    `_yarn_top_level_blocks` would drop it or fold its body into the previous
+    block, while Yarn parses it as an ordinary entry.
+    """
+    return any(
+        line
+        and not line[0].isspace()
+        and not line.startswith("#")
+        and not line.rstrip().endswith(":")
+        for line in lines
+    )
 
 
 def _yarn_top_level_blocks(lines: list[str]) -> list[tuple[str, list[str]]]:
@@ -791,16 +976,22 @@ def _yarn_top_level_blocks(lines: list[str]) -> list[tuple[str, list[str]]]:
     return blocks
 
 
+def _yaml_field_pattern(indent: int, key: str) -> re.Pattern[str]:
+    """`key:` at exactly `indent`, plain or quoted, optionally spaced (`key :`)."""
+    escaped = re.escape(key)
+    return re.compile(
+        "^" + " " * indent + f"""(?:{escaped}|"{escaped}"|'{escaped}')[ \t]*:(.*)$"""
+    )
+
+
 def _yarn_direct_scalars(body: list[str], key: str) -> list[str | None]:
     populated = [line for line in body if line.strip()]
     if not populated:
         return []
     direct_indent = min(len(line) - len(line.lstrip(" ")) for line in populated)
-    pattern = re.compile(
-        r"^" + re.escape(" " * direct_indent + key) + r":\s*(.*?)\s*$"
-    )
+    pattern = _yaml_field_pattern(direct_indent, key)
     return [
-        _strip_balanced_yaml_scalar(match.group(1))
+        _strip_balanced_yaml_scalar(match.group(1).strip())
         for line in body
         if (match := pattern.match(line))
     ]
@@ -811,9 +1002,7 @@ def _yarn_direct_raw_scalars(body: list[str], key: str) -> list[str]:
     if not populated:
         return []
     direct_indent = min(len(line) - len(line.lstrip(" ")) for line in populated)
-    pattern = re.compile(
-        r"^" + re.escape(" " * direct_indent + key) + r":\s*(.*?)\s*$"
-    )
+    pattern = _yaml_field_pattern(direct_indent, key)
     return [
         match.group(1).strip()
         for line in body
@@ -935,6 +1124,10 @@ def _extract_yarn_berry_version_info(
             for value in resolutions
         )
         if not (header_match or resolution_match or resolution_name_match):
+            # Another identity whose resolution fetches the package (a URL or
+            # git source) is a renamed install, not unrelated metadata.
+            if _yarn_fetches_package(header, body, package):
+                untrusted = True
             continue
         version_values = _yarn_direct_scalars(body, "version")
         relevant.append((header, version_values, resolutions))
@@ -982,6 +1175,8 @@ def _extract_yarn_lock_version_info(
         lines = text.splitlines()
     except (OSError, UnicodeError):
         return LockfilePackageVersions(mixed_or_untrusted=True)
+    if _yarn_has_unrecognized_top_level(lines):
+        return LockfilePackageVersions(mixed_or_untrusted=True)
     metadata_key_re = re.compile(
         r"^(?:__metadata|\"__metadata\"|'__metadata')\s*:"
     )
@@ -1025,8 +1220,61 @@ class _YamlMappingIndex:
     unsupported_structure: bool = False
 
 
+def _join_flow_lines(lines: list[str]) -> list[str]:
+    """Fold Prettier's `key:` + `{` ... `}` lines back onto the key line.
+
+    The subset gate only admits a multi-line flow collection in that shape;
+    joining it gives the index the one-line `key: {...}` pnpm itself writes.
+    """
+    joined: list[str] = []
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        if (
+            line.strip()[:1] in ("{", "[")
+            and joined
+            and joined[-1].rstrip().endswith(":")
+            and len(line) - len(line.lstrip()) > len(joined[-1]) - len(joined[-1].lstrip())
+        ):
+            parts = [joined[-1].rstrip(), line.strip()]
+            depth = 0
+            quote = None
+            while True:
+                text = parts[-1]
+                position = 0
+                while position < len(text):
+                    char = text[position]
+                    if quote == '"' and char == "\\":
+                        position += 2  # `\\` or `\"`, the only escapes admitted
+                        continue
+                    if quote:
+                        if char == quote:
+                            quote = None
+                    elif char == "#" and (position == 0 or text[position - 1] in " \t"):
+                        # A comment: drop it so its brackets are not counted.
+                        parts[-1] = text[:position].rstrip()
+                        break
+                    elif char in "\"'":
+                        quote = char
+                    elif char in "[{":
+                        depth += 1
+                    elif char in "]}":
+                        depth -= 1
+                    position += 1
+                if depth <= 0 or index + 1 >= len(lines):
+                    break
+                index += 1
+                parts.append(lines[index].strip())
+            joined[-1] = " ".join(parts)
+        else:
+            joined.append(line)
+        index += 1
+    return joined
+
+
 def _yaml_mapping_index(lines: list[str]) -> _YamlMappingIndex:
     """Index the mapping-only pnpm subset once, in linear time."""
+    lines = _join_flow_lines(lines)
     nodes: list[_YamlMappingNode] = []
     roots: list[int] = []
     mutable_children: dict[int, list[int]] = {}
@@ -1111,6 +1359,63 @@ def _pnpm_specifier_is_registry_like(specifier: str | None) -> bool:
     )
 
 
+def _parse_yaml_flow_mapping(value: str) -> dict[str, str] | None:
+    """Parse pnpm's one-line `{key: value, ...}`; None when ambiguous."""
+    value = value.strip()
+    if not (value.startswith("{") and value.endswith("}")):
+        return None
+    inner = value[1:-1].strip()
+    fields: dict[str, str] = {}
+    if not inner:
+        return fields
+    items = inner.split(",")
+    if len(items) > 1 and not items[-1].strip():
+        items.pop()  # a trailing comma (Prettier)
+    for item in items:
+        key, separator, raw = item.partition(":")
+        key = _strip_balanced_yaml_scalar(key) or ""  # `"tarball": ...`
+        scalar = _strip_balanced_yaml_scalar(raw)
+        if (
+            not separator
+            or not key
+            or key in fields
+            or scalar is None
+            or any(char in scalar for char in "{}[]")
+        ):
+            return None
+        fields[key] = scalar
+    return fields
+
+
+def _pnpm_resolution(
+    index: _YamlMappingIndex, package_node: int
+) -> tuple[list[str], dict[str, str] | None]:
+    """(every raw value, parsed fields or None) of a package's `resolution`."""
+    entries = _yaml_child_values(index, package_node, "resolution")
+    if not entries:
+        return [], {}
+    raw: list[str] = []
+    stack = [node for node, _ in entries]
+    while stack:
+        node = stack.pop()
+        raw.append(index.nodes[node].value)
+        stack.extend(index.children.get(node, ()))
+    if len(entries) != 1:
+        return raw, None
+    node, value = entries[0]
+    children = index.children.get(node, ())
+    if value:
+        return raw, None if children else _parse_yaml_flow_mapping(value)
+    fields: dict[str, str] = {}
+    for child in children:
+        key = index.nodes[child].key
+        scalar = _strip_balanced_yaml_scalar(index.nodes[child].value)
+        if index.children.get(child) or key in fields or scalar is None:
+            return raw, None
+        fields[key] = scalar
+    return raw, fields
+
+
 def _extract_pnpm_lock_version_info(
     lockfile: Path, package: str, text: str | None = None
 ) -> LockfilePackageVersions:
@@ -1135,7 +1440,8 @@ def _extract_pnpm_lock_version_info(
 
     versions: set[str] = set()
     untrusted = (
-        index.unsupported_structure or len(index.roots) != len(root_by_key)
+        index.unsupported_structure
+        or len(index.roots) != len(root_by_key)
     )
     escaped = re.escape(package)
     modern_package_key_re = re.compile(
@@ -1211,6 +1517,64 @@ def _extract_pnpm_lock_version_info(
     if not snapshot_versions.issubset(versions):
         untrusted = True
 
+    own_key_prefixes = (f"{package}@", f"/{package}@", f"/{package}/")
+    for idx in sorted(direct_package_nodes | direct_snapshot_nodes):
+        key = nodes[idx].key
+        inline = nodes[idx].value
+        if inline.endswith(":") and ": " not in inline:
+            # The line index splits an unquoted key containing `:` (pnpm's
+            # `dep@https://...:` tarball keys) at its first colon; rejoin it.
+            key, inline = f"{key}:{inline[:-1]}", ""
+        is_package_node = idx in direct_package_nodes
+        own_match = (
+            allowed_package_key_re if is_package_node else snapshot_key_re
+        ).fullmatch(key)
+        if inline not in ("", "{}"):
+            # An inline mapping (`key: {resolution: ...}`) hides its fields
+            # from the line index; pnpm writes records in block style.
+            if (
+                own_match is not None
+                or key.startswith(own_key_prefixes)
+                or _mentions_package(inline, package)
+            ):
+                untrusted = True
+            continue
+        if own_match is None:
+            if key.startswith(own_key_prefixes):
+                # The package from a tarball/git/file source: no registry
+                # version to compare with the denylist.
+                untrusted = True
+                continue
+            # pnpm merges a snapshot over its package record, so a snapshot's
+            # `resolution` is a fetch source too.
+            raw, fields = _pnpm_resolution(index, idx)
+            if (
+                fields is not None
+                and fields.get("type") == "directory"
+                and set(fields) <= {"directory", "type"}
+            ):
+                continue  # a local directory, never a fetched release
+            sources = list(fields.values()) if fields is not None else raw
+            source_key = key.split("(", 1)[0]
+            if _has_fetch_marker(source_key):
+                # A tarball/git key; peer suffixes (`(...)`, 5.4's `_a+b`)
+                # legitimately name other packages and are not sources.
+                sources.append(source_key)
+            if any(_mentions_package(source, package) for source in sources):
+                # Another identity whose key or fetched source names the
+                # package is a renamed install, not unrelated metadata.
+                untrusted = True
+            continue
+        _, fields = _pnpm_resolution(index, idx)
+        version = own_match.group(1)
+        if fields is None or not set(fields) <= {"integrity", "tarball"} or (
+            "tarball" in fields
+            and not _tarball_url_matches(fields["tarball"], package, version)
+        ):
+            # pnpm fetches `resolution.tarball` verbatim (the attacker also
+            # writes `integrity`), so it must be exactly this release's tarball.
+            untrusted = True
+
     allowed_maps = {"dependencies", "devDependencies", "optionalDependencies"}
     importer_sections = root_by_key.get("importers", [])
     if len(importer_sections) > 1:
@@ -1225,11 +1589,15 @@ def _extract_pnpm_lock_version_info(
         for importer in index.children.get(importer_section, ()):
             if _yaml_has_duplicate_child_keys(index, importer):
                 untrusted = True
-            dependency_maps.extend(
-                child
-                for child in index.children.get(importer, ())
-                if nodes[child].key in allowed_maps
-            )
+            # A flow value here (`.: {...}`, `dependencies: {...}`) stands in
+            # for the block mapping the index reads.
+            if nodes[importer].value not in ("", "{}"):
+                untrusted = True
+            for child in index.children.get(importer, ()):
+                if nodes[child].key in allowed_maps:
+                    dependency_maps.append(child)
+                    if nodes[child].value not in ("", "{}"):
+                        untrusted = True
     direct_dependency_nodes = {
         child
         for dependency_map in dependency_maps
@@ -1453,6 +1821,8 @@ def _tarball_url_matches(url: str, name: str, version: str) -> bool:
     """
     if "?" in url or "#" in url or "%" in url or "\\" in url:
         return False
+    if any(char <= " " or char == "\x7f" for char in url):
+        return False  # URL parsers drop or trim these: not a plain URL
     try:
         parts = urllib.parse.urlsplit(url)
     except ValueError:
@@ -1469,16 +1839,43 @@ def _tarball_url_matches(url: str, name: str, version: str) -> bool:
     return parts.path.endswith(f"/{name}/-/{basename}-{version}.tgz")
 
 
+_URL_IGNORED_CHARS_RE = re.compile("[\t\n\r]")
+# WHATWG accepts special schemes with any run of `/` or `\` (even none):
+# `https:/u@host/x`, `https:host/x`, and `https:\\host/x` all fetch host/x.
+_SPECIAL_SCHEME_SLASHES_RE = re.compile(
+    r"(?<![A-Za-z0-9+.-])(https?|wss?|ftp):[/\\]*", re.IGNORECASE
+)
+
+
+def _canonical_url_text(value: str) -> str:
+    """`value` as a WHATWG parser reads its URLs: tab/CR/LF dropped and each
+    special scheme followed by exactly `//`."""
+    return _SPECIAL_SCHEME_SLASHES_RE.sub(
+        lambda match: match.group(1) + "://", _URL_IGNORED_CHARS_RE.sub("", value)
+    )
+
+
 def _percent_decodings(value: str) -> list[str]:
-    """`value` plus its percent-decoded forms (registries decode `%6b` -> `k`)."""
-    forms = [value]
-    for _ in range(3):
-        if "%" not in forms[-1]:
-            break
-        decoded = urllib.parse.unquote(forms[-1])
-        if decoded == forms[-1]:
-            break
-        forms.append(decoded)
+    """`value` plus the forms a URL parser and registry may see in it.
+
+    WHATWG URL parsing drops tab/CR/LF anywhere (`ke\tyv` -> `keyv`) and
+    accepts `https:/x` or `https:x` for `https://x`, and registries
+    percent-decode paths (`%6beyv` -> `keyv`).
+    """
+    bases = [value]
+    canonical = _canonical_url_text(value)
+    if canonical != value:
+        bases.append(canonical)
+    forms: list[str] = []
+    for base in bases:
+        forms.append(base)
+        for _ in range(3):
+            if "%" not in forms[-1]:
+                break
+            decoded = urllib.parse.unquote(forms[-1])
+            if decoded == forms[-1]:
+                break
+            forms.append(decoded)
     return forms
 
 
@@ -1494,17 +1891,30 @@ def _url_path_identities(value: str) -> set[str]:
     for form in _percent_decodings(value):
         scheme_end = form.find("://")
         while scheme_end != -1:
-            rest = form[scheme_end + 3:]
+            # Each URL spans only up to the next `://`, which is handled on its
+            # own, so a run of URLs costs linear rather than quadratic work.
+            next_scheme = form.find("://", scheme_end + 3)
+            rest = form[scheme_end + 3:next_scheme if next_scheme != -1 else None]
             slash = rest.find("/")
             if slash != -1:
                 parts = [part for part in _URL_PATH_SPLIT_RE.split(rest[slash:]) if part]
-                for index, part in enumerate(parts):
-                    identities.add(part)
+                index = 0
+                while index < len(parts):
+                    part = parts[index]
                     if part.startswith("@") and index + 1 < len(parts):
-                        identities.add(f"{part}/{parts[index + 1]}")
+                        # Keep `@scope/name` whole: `@types/keyv` must not
+                        # read as `keyv` (same scope rule as `_candidates`).
+                        scoped = parts[index + 1]
+                        identities.add(f"{part}/{scoped}")
+                        if "@" in scoped:
+                            identities.add(f"{part}/{scoped.split('@', 1)[0]}")
+                        index += 2
+                        continue
+                    identities.add(part)
                     if "@" in part[1:]:
                         identities.update(piece for piece in part.split("@") if piece)
-            scheme_end = form.find("://", scheme_end + 3)
+                    index += 1
+            scheme_end = next_scheme
     return identities
 
 
@@ -1519,11 +1929,12 @@ def _mentions_package(value: str, package: str) -> bool:
     )
 
 
-def _is_local_bun_resolution(resolution: str) -> bool:
+def _is_local_directory_resolution(resolution: str) -> bool:
     """workspace:/link:/directory file: resolutions never fetch a release."""
     if resolution.startswith(("workspace:", "link:")):
         return True
-    return resolution.startswith("file:") and not resolution.endswith(
+    # npm classifies archives case-insensitively (`payload.TGZ` is a file).
+    return resolution.startswith("file:") and not resolution.lower().endswith(
         (".tgz", ".tar.gz", ".tar")
     )
 
@@ -1605,7 +2016,7 @@ def _extract_bun_lock_version_info(
         name, resolution = identity
         tarball = value[1] if len(value) >= 2 and isinstance(value[1], str) else ""
         if name != package:
-            fetches = not _is_local_bun_resolution(resolution)
+            fetches = not _is_local_directory_resolution(resolution)
             if key_package == package or (fetches and (
                 _mentions_package(tarball, package)
                 or _mentions_package(resolution, package)
@@ -2061,10 +2472,145 @@ def query_osv_api(
         )
 
 
+def _yaml_has_unsupported_quoting(text: str, *, yarn_classic: bool) -> bool:
+    """True when yarn/pnpm text leaves the plain subset lockfile writers emit.
+
+    Rejected: a quoted scalar with an escape (other than `\\\\`/`\\"`) or one
+    spanning lines; a tag `!`, anchor `&`, alias `*`, block scalar `|`/`>`,
+    explicit key `?`, or merge key `<<`; an unbalanced flow collection; and
+    any line outside a flow collection that is not a comment, a `- item`, or a
+    `key:`/`key: value` entry (Yarn Classic: or `key value`), i.e. a continued
+    plain scalar. (Flow collections may span lines: Prettier formats pnpm
+    lockfiles that way.)
+    Each can spell, move, or hide an identity or URL (`ke\\u0079v`, a folded
+    or literal line break, `!!str "..."`, `*payload`) where the line-based gate
+    and extractors cannot see it. A quote or indicator counts only where YAML
+    starts a node (line start, after `:`/`-`/`?` plus whitespace, inside a flow
+    collection, or right after a quoted key's colon; Yarn Classic quotes also
+    after whitespace), so `don't` or `workspace:*` in plain text are fine.
+    One linear pass per line.
+    """
+    flow_depth = 0
+    flow_key_indent = 0  # indent of the line whose value is the open flow
+    last_content = None  # previous non-blank, non-comment line content
+    last_indent = 0
+    for line in _YAML_LINE_BREAK_RE.split(text):
+        quote = None
+        previous = ""  # last non-space character outside quotes
+        in_flow = flow_depth > 0
+        content_end = len(line)
+        stripped = line.strip()
+        if last_content is None and stripped and not stripped.startswith("#"):
+            if line[:1].isspace():
+                return True  # an indented root mapping
+        if (
+            in_flow
+            and stripped
+            and not stripped.startswith("#")
+            and len(line) - len(line.lstrip()) <= flow_key_indent
+        ):
+            return True  # a flow continuation line dedented out of its key
+        index = 0
+        while index < len(line):
+            char = line[index]
+            if quote == '"':
+                if char == "\\":
+                    if line[index + 1:index + 2] not in ("\\", '"'):
+                        return True
+                    index += 2
+                    continue
+                if char == '"':
+                    quote = None
+                    previous = '"'
+                index += 1
+                continue
+            if quote == "'":
+                if char == "'":
+                    if line[index + 1:index + 2] == "'":
+                        index += 2
+                        continue
+                    quote = None
+                    previous = "'"
+                index += 1
+                continue
+            if char == "#" and (index == 0 or line[index - 1] in " \t"):
+                content_end = index
+                break  # comment
+            at_node_start = (
+                index == 0
+                or (
+                    previous in ("", "[", "{", ",", ":", "-", "?")
+                    and line[index - 1] in " \t"
+                )
+                or (previous in ("[", "{", ",") and line[index - 1] == previous)
+                or (line[index - 1] == ":" and line[index - 2:index - 1] in ("'", '"'))
+            )
+            if at_node_start and (
+                char in "!&*|>"
+                or (char == "?" and line[index + 1:index + 2] in ("", " ", "\t"))
+                or (char == "<" and line.startswith("<<", index))
+            ):
+                return True
+            if char in "\"'" and (
+                previous in ("", ":", "-", "[", "{", ",")
+                or (yarn_classic and line[index - 1] in " \t")
+            ):
+                quote = char
+            elif char in "[{" and (flow_depth or at_node_start):
+                if not flow_depth and not (
+                    previous in (":", "-")  # an inline value: `key: {...}`
+                    or (
+                        # Prettier: `key:` then the flow value on the next,
+                        # more indented line.
+                        previous == ""
+                        and last_content is not None
+                        and last_content.endswith(":")
+                        and len(line) - len(line.lstrip()) > last_indent
+                    )
+                ):
+                    return True  # a flow collection standing in for keys
+                if not flow_depth:
+                    flow_key_indent = (
+                        len(line) - len(line.lstrip())
+                        if previous in (":", "-")
+                        else last_indent
+                    )
+                flow_depth += 1
+                in_flow = True
+            elif char in "]}" and flow_depth:
+                flow_depth -= 1
+            if char not in " \t":
+                previous = char
+            index += 1
+        if quote is not None:
+            return True
+        content = line[:content_end].strip()
+        if content and not in_flow:
+            last_content = content
+            last_indent = len(line) - len(line.lstrip())
+        elif content:
+            last_content = content
+        if content and not in_flow and not (
+            content == "-"
+            or content.startswith("- ")
+            or content.endswith(":")
+            or ": " in content
+            or ":\t" in content
+            # Yarn Classic writes `key value` pairs.
+            or (yarn_classic and len(content.split(None, 1)) == 2)
+        ):
+            return True  # a continued plain scalar or other construct
+    return flow_depth > 0
+
+
 def _has_unsupported_identity_encoding(lockfile_name: str, text: str) -> bool:
     """Reject encodings our bounded exact extractors cannot safely interpret."""
     if lockfile_name in _YAML_LOCKFILES:
-        return _YAML_IDENTITY_ESCAPE_RE.search(text) is not None
+        return _yaml_has_unsupported_quoting(
+            text,
+            yarn_classic=lockfile_name == "yarn.lock"
+            and _YARN_BERRY_METADATA_RE.search(text) is None,
+        )
     if lockfile_name != "Cargo.lock":
         return False
     if _CARGO_INVALID_LINE_BREAK_RE.search(text):
@@ -2100,8 +2646,72 @@ def _has_unsupported_identity_encoding(lockfile_name: str, text: str) -> bool:
     return False
 
 
+def _display_safe(text: str) -> str:
+    """Escape control and non-ASCII characters before printing hostile text,
+    so escape sequences, lookalikes, or bidi characters cannot rewrite or
+    disguise what the operator sees."""
+    return "".join(
+        char if " " <= char < "\x7f" and char != "\\"
+        else char.encode("unicode_escape").decode("ascii")
+        for char in text
+    )
+
+
+def _yaml_scalar_text(value: str) -> str:
+    """A one-line YAML value without quotes or a trailing ` #` comment."""
+    value = value.strip()
+    if value[:1] in ("'", '"'):
+        return _strip_balanced_yaml_scalar(value) or ""
+    comment = value.find(" #")
+    return value if comment == -1 else value[:comment].rstrip()
+
+
+def _remote_fetch_source(value: str) -> tuple[str, str] | None:
+    """(host label, url) when a fetch field's URL is outside the default
+    registries.
+
+    `value` is one fetch field (a `resolved`/`tarball`/`repo`/... value), so
+    it holds one URL: everything after its first `://` is that URL, and a
+    URL-shaped query value is never read as another source. After dropping
+    tab/CR/LF (as URL parsers do), the host is shown only when the authority
+    ends at `/`, `?`, `#` or `\\`, and only the part after its last `@`:
+    userinfo may hold a token and is never echoed, and an authority cut short
+    (a comma, quote, or space) could still be userinfo.
+    """
+    value = _canonical_url_text(value)
+    marker = value.find("://")
+    if marker == -1:
+        return None
+    scheme_start = marker
+    while scheme_start > 0 and value[scheme_start - 1] in _URL_SCHEME_CHARS:
+        scheme_start -= 1
+    while scheme_start < marker and not value[scheme_start].isalpha():
+        scheme_start += 1
+    if scheme_start == marker:
+        return None
+    scheme = value[scheme_start:marker].lower()
+    after = marker + 3
+    authority_end = _URL_AUTHORITY_END_RE.search(value, after)
+    stop = authority_end.start() if authority_end else len(value)
+    # `\\` ends the authority only for WHATWG special schemes; elsewhere
+    # (`git+ssh`) it can sit inside userinfo, so the host is withheld.
+    terminated = authority_end is not None and (
+        value[stop] in "/?#"
+        or (value[stop] == "\\" and scheme in _URL_SPECIAL_SCHEMES)
+    )
+    host = _HOST_RE.match(value[after:stop].rsplit("@", 1)[-1]).group().lower()
+    if terminated and scheme == "https" and host in _DEFAULT_NPM_REGISTRY_HOSTS:
+        return None
+    label = (_display_safe(host) or "(no host)") if terminated else "(host not shown)"
+    if scheme != "https":
+        label = f"{_display_safe(scheme)}://{label}"
+    return label, value[scheme_start:]
+
+
 def ioc_grep(
-    lockfiles: list[Path], iocs: Mapping[str, IocEntry]
+    lockfiles: list[Path],
+    iocs: Mapping[str, IocEntry],
+    remote_sources: dict[str, dict[Path, set[str]]] | None = None,
 ) -> tuple[list[IocHit], list[Path]]:
     """Scan each lockfile line-by-line and return (IocHit records, unreadable).
 
@@ -2109,6 +2719,9 @@ def ioc_grep(
     version evidence for later conservative classification. `unreadable` lists
     discovered lockfiles that could not be read; the caller FAILS CLOSED on
     those because an unscanned lockfile prevents certifying the repo clean.
+    When `remote_sources` is given, it is filled with the npm-family fetch
+    URLs on non-default hosts ({host label: {lockfile: {url}}}) for the
+    non-gating registry-host advisory.
     """
     # Normalized view of the IoC set for PyPI matching (built once).
     iocs_pep503 = {_pep503(i): i for i in iocs}
@@ -2144,21 +2757,36 @@ def ioc_grep(
             unreadable.append(lf)
             continue
         is_pypi = lf.name in _PYPI_LOCKFILES
-        is_bun = lf.name in ("bun.lock", "bun.lockb")
+        is_npm = _LOCKFILE_POLICY_ECOSYSTEMS.get(lf.name) == "npm"
         recorded_in_file: set[str] = set()
 
+        def note_sources(value: str) -> None:
+            """Record one fetch field's URL for the registry-host advisory."""
+            if (
+                remote_sources is None
+                or not is_npm
+                or "://" not in _canonical_url_text(value)
+            ):
+                return
+            source = _remote_fetch_source(value)
+            if source is not None:
+                label, url = source
+                remote_sources.setdefault(label, {}).setdefault(lf, set()).add(url)
+
         def record_candidates(value: str, line_no: int) -> None:
-            # Bun downloads recorded tarball URLs verbatim and registries
-            # percent-decode paths, so `%6beyv` must still surface `keyv`,
-            # and URL credentials must not hide the path from the tokenizer.
-            forms = _percent_decodings(value) if is_bun else (value,)
+            # npm-family managers download recorded tarball URLs verbatim and
+            # registries percent-decode paths, so `%6beyv` must still surface
+            # `keyv`, and URL credentials must not hide the path.
+            forms = _percent_decodings(value) if is_npm else (value,)
             candidates = (
                 cand
                 for form in forms
                 for tok in _TOKEN_RE.findall(form)
                 for cand in _candidates(tok)
             )
-            if is_bun and "://" in value:
+            if is_npm and ":" in value:
+                # `_url_path_identities` checks each normalized form (a tab
+                # inside `https:\t//` is dropped by URL parsers).
                 candidates = itertools.chain(
                     candidates, sorted(_url_path_identities(value))
                 )
@@ -2194,12 +2822,53 @@ def ioc_grep(
             # unseparated, so raw runs can merge adjacent names.
             for line in _bun_lockb_lines(parsed):
                 record_candidates(line, 0)
+            # Rows may share one URL string: inspect each distinct URL once.
+            for url in dict.fromkeys(
+                package.url
+                for package in parsed.packages
+                if package.resolution_tag not in _BUN_LOCAL_RESOLUTIONS
+            ):
+                note_sources(url)
             continue
 
+        unsupported_encoding = _has_unsupported_identity_encoding(lf.name, text)
         for line_no, line in enumerate(text.splitlines(), start=1):
             record_candidates(line, line_no)
+            if (
+                lf.name == "yarn.lock"
+                and not unsupported_encoding
+                and ":" in line
+                and line[:1].isspace()
+            ):
+                # Only a fetch field, read as one URL; comments and other
+                # text are never fetch sources.
+                content = line.strip()
+                for key in ("resolved", "resolution"):
+                    value = _yarn_field_value(content, key)
+                    if value is not None:
+                        note_sources(_yaml_scalar_text(value))
+        if lf.name == "pnpm-lock.yaml" and not unsupported_encoding:
+            for node in _yaml_mapping_index(text.splitlines()).nodes:
+                if "://" not in _canonical_url_text(node.value):
+                    continue
+                # A flow mapping spread over lines leaves `{ tarball` keys
+                # and `url,` values in the line index.
+                key = node.key.lstrip("{[, \t")
+                if key in ("tarball", "repo"):
+                    note_sources(_yaml_scalar_text(node.value.rstrip(",]} \t")))
+                elif key == "resolution":
+                    fields = _parse_yaml_flow_mapping(node.value)
+                    for field_name in ("tarball", "repo"):
+                        if fields is not None and field_name in fields:
+                            note_sources(fields[field_name])
+                    if fields is None and remote_sources is not None:
+                        # A remote resolution we cannot split into fields:
+                        # flag it without echoing any of its text.
+                        remote_sources.setdefault(
+                            "(unparsed resolution)", {}
+                        ).setdefault(lf, set()).add(node.value)
 
-        if _has_unsupported_identity_encoding(lf.name, text):
+        if unsupported_encoding:
             # Raw matches still surface first, but an encoded identity invisible
             # to the textual gate cannot be certified clean by a partial parser.
             unreadable.append(lf)
@@ -2239,11 +2908,20 @@ def ioc_grep(
                 if isinstance(value, dict):
                     stack.extend(value.values())
                     strings = value.keys()
+                    if lf.name not in _JSONC_LOCKFILES:
+                        # package-lock: only fetch fields, not funding/repo
+                        # metadata URLs.
+                        for field_name in ("resolved", "version"):
+                            field = value.get(field_name)
+                            if isinstance(field, str):
+                                note_sources(field)
                 elif isinstance(value, list):
                     stack.extend(value)
                     continue
                 elif isinstance(value, str):
                     strings = (value,)
+                    if lf.name in _JSONC_LOCKFILES:
+                        note_sources(value)
                 else:
                     continue
                 for string in strings:
@@ -2263,8 +2941,9 @@ def classify_ioc_hits(
     opportunistic supplement: an exact malicious-code advisory adds a hit, but
     a clean response or unavailable API leaves the locally disjoint version
     safe. Structurally ambiguous version evidence remains a hit because no safe
-    exact version was established; registry URL/integrity metadata is not part
-    of the package-version identity.
+    exact version was established; integrity metadata is not part of the
+    package-version identity, and the extractors only trust a recorded
+    tarball URL that is exactly that release's.
     """
     classified: list[IocHit] = []
     processed_version_aware: set[tuple[Path, str, str]] = set()
@@ -2391,7 +3070,8 @@ def main() -> int:
 
     try:
         lockfiles, symlinked, traversal_errors = discover_lockfiles(repo)
-        name_hits, unreadable = ioc_grep(lockfiles, iocs)
+        remote_sources: dict[str, dict[Path, set[str]]] = {}
+        name_hits, unreadable = ioc_grep(lockfiles, iocs, remote_sources)
         hits = classify_ioc_hits(name_hits, use_osv=not args.offline)
     except Exception as exc:
         print(
@@ -2400,6 +3080,35 @@ def main() -> int:
             file=sys.stderr,
         )
         return 3
+
+    if remote_sources:
+        # Non-gating: a denylist cannot judge what an arbitrary host serves.
+        print(
+            "ioc_scan: NOTE (non-gating) — npm-family lockfiles fetch packages "
+            "from outside the default registries. The IoC list cannot vouch "
+            "for what these hosts serve, and a hand-edited lockfile can point "
+            "any package at them; confirm each host is expected before "
+            "installing:",
+            file=sys.stderr,
+        )
+        ranked = sorted(
+            remote_sources.items(),
+            key=lambda item: (-sum(len(urls) for urls in item[1].values()), item[0]),
+        )
+        for label, by_lockfile in ranked[:_REMOTE_SOURCE_DISPLAY_LIMIT]:
+            count = sum(len(urls) for urls in by_lockfile.values())
+            files = sorted(
+                _display_safe(str(lf.relative_to(repo))) for lf in by_lockfile
+            )
+            shown = ", ".join(files[:3]) + (
+                f", +{len(files) - 3} more" if len(files) > 3 else ""
+            )
+            print(f"  {label}: {count} URL(s) in {shown}", file=sys.stderr)
+        if len(ranked) > _REMOTE_SOURCE_DISPLAY_LIMIT:
+            print(
+                f"  … and {len(ranked) - _REMOTE_SOURCE_DISPLAY_LIMIT} more host(s)",
+                file=sys.stderr,
+            )
 
     # A definitive HIT is the most informative outcome — report it first (still a
     # HALT). Both exit 2 (hit) and exit 3 (couldn't fully scan) stop prep.

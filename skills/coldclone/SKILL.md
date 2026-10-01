@@ -107,6 +107,11 @@ in-tree sentinel as the authority.
 - `3`: high-confidence prompt-injection HALT. Stop, surface the alert, and wait
   for the human operator's decision.
 
+The dependency scan may also print a non-gating `NOTE` listing hosts outside the
+default npm registries that lockfiles fetch packages from (git hosts, private
+registries, plain `http`). It does not change the exit code; relay it to the
+user, since a forged lockfile can point any package at such a host.
+
 Direct `sanitize_repo.py` users may acknowledge injection with
 `COLDCLONE_ACK_INJECTION=1`, but the `coldclone.sh` wrapper intentionally
 requires `--ack-injection` on the same invocation and scrubs ambient env acks.

@@ -29,8 +29,8 @@ Plain entries in `ioc-list.txt` are package-wide triggers for identities whose
 entire release family is malicious, such as typosquats. Adding
 `VERSION: <ecosystem> | <package> | <exact-semver>` makes that identity
 version-scoped: a trusted exact intersection alerts, while any other trusted
-exact version is treated as safe. Registry URL and integrity metadata are not
-part of version identity. Structurally ambiguous or unsupported evidence still
+exact version is treated as safe. Integrity metadata is not part of version
+identity, and a fetched tarball URL must agree with it (see below). Structurally ambiguous or unsupported evidence still
 halts because the scanner cannot prove which release is locked; a trusted
 extractor finding no installed record clears a textual metadata-only match. Legacy
 `AFFECTED_SET_COMPLETE: <ecosystem> | <package>` records remain accepted as
@@ -39,11 +39,29 @@ provenance but are not required for clearance.
 Exact extraction covers package-lock, Yarn Classic, structurally validated Yarn
 Berry `npm:` locators, structurally validated pnpm package keys/importer
 versions, Bun (`bun.lock` text and the binary `bun.lockb`, formats 2 and 3), and
-Cargo. Registry tarball, source, and integrity metadata are ignored
-because it does not determine the locked package/version identity; the one
-exception is `bun.lockb`, where a recorded tarball URL must agree with the
-parsed name and version or that record is treated as untrusted. A `bun.lockb`
-whose binary layout does not validate fails the gate closed. By default,
+Cargo. npm-family package managers download a recorded tarball URL verbatim
+(package-lock and Yarn Classic `resolved`, pnpm `resolution.tarball`, Bun's
+tarball field), and a hand-edited lockfile can forge the matching `integrity`
+too. So a version is only trusted when that URL is exactly the
+`<name>/-/<name>-<version>.tgz` of the recorded release, with no query,
+credentials, percent-encoding, or dot segments. A record of another identity
+whose fetched URL or git source names the package (a renamed install) keeps
+the hit. Integrity metadata is ignored. A `bun.lockb` whose binary layout does
+not validate fails the gate closed, as does a `yarn.lock` / `pnpm-lock.yaml`
+with an escape sequence in a quoted value (lockfile writers emit none, and it
+can spell a name or URL a line-based scan cannot see), a quoted value spanning
+lines, or a YAML tag, anchor, alias, or merge key. Unrecognized top-level lines
+keep a version-scoped hit instead of clearing it.
+
+The tarball's host is not part of that check, so private registries and
+mirrors keep working. Instead, the scan prints a non-gating `NOTE` listing
+every host outside `registry.npmjs.org` / `registry.yarnpkg.com` (and any
+plain-`http` or git source) that npm-family lockfiles fetch from, with a URL
+count. Only scheme and host are shown; credentials, paths, and query strings
+are never echoed. A denylist cannot vouch for what such a host serves, so
+confirm each one is expected before installing. Registry overrides in config
+files (`.npmrc`, `.yarnrc.yml`, `bunfig.toml`) and `github:`-style shorthands
+are outside this note. By default,
 version-scoped disjoint matches also receive an
 opportunistic exact-version OSV API lookup; only a malicious-code advisory adds
 a hit. A clean response or unavailable OSV leaves the local exact-denylist
