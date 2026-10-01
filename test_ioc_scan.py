@@ -218,7 +218,7 @@ def test_canonical_policy_has_pinned_version_and_complete_set_shape() -> None:
     }
     assert len(actual) == 2400
     assert expected_sentinels <= actual
-    assert len(iocs) == 6477
+    assert len(iocs) == 6471
     assert sum(bool(entry.version_evidence) for entry in iocs.values()) == 521
 
     complete = {

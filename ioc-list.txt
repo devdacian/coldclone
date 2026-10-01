@@ -3952,7 +3952,11 @@ VERSION: npm | hello-shai | 1.0.1
 # that are live legitimate packages in another ecosystem (concierge-sdk, envparse2,
 # infinity-grid, jimg, json-into-html, memov, nebula-sdk, op-ts-server-core, runhelper).
 # Also excluded: fuels-versions (squat on the CLI bin name of legitimate
-# @fuel-ts/versions; would match every Fuel TS package-lock).
+# @fuel-ts/versions; would match every Fuel TS package-lock), and the rest of the
+# same 2026-09-01T22:40Z npm squat batch on legitimate web3 SDK bin/workspace names:
+# cre-setup (@chainlink/cre-sdk-javy-plugin bin), hyperliquid-composer (LayerZero
+# devtools workspace), generate-schema-ethers/-viem, verify-contract-ethers/-viem.
+# All are 0.0.1-security placeholders, so they can only false-HALT, never protect.
 @adominadmininstr/date-util-helper
 @adominadmininstr/fmt-date-helper
 @airbnb-extended/typescript-config
@@ -5777,7 +5781,6 @@ com.db.dbk.ui-forms
 confluence-create-content
 confluence-editor
 core_main
-cre-setup
 crm-reportinsightserv-paypal
 crypto-promise-js
 cuke-dedup-win32-arm64
@@ -5839,8 +5842,6 @@ framework-zero
 fundraiserserv
 fundraiserservicepp
 gclassroom
-generate-schema-ethers
-generate-schema-viem
 get-power
 github-app-sts-action
 glia-functions-tools
@@ -5865,7 +5866,6 @@ htps-provider
 http-server-rs-win32-x64
 humanize-kit
 hunterone-build-probe-9210
-hyperliquid-composer
 i18nexus-tools
 identityauthorizationserv
 identityscimapiserv
@@ -6189,8 +6189,6 @@ utils-mf
 uuid-date
 ux-metrics-client-interaction-subscriber
 valid-scope
-verify-contract-ethers
-verify-contract-viem
 visa-cli-tools
 vite-plugin-compress-js
 vite-plugin-crypto
