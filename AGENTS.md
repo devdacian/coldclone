@@ -68,6 +68,9 @@ closed when its policy or lockfile coverage is invalid.
 
 This repo is developed with [Touchstone](http://github.com/devdacian/touchstone) — an
 adversarial, cross-model plan/implementation review process. When improving coldclone's
-own skills or methodology (not when *using* the gauntlet), and only if the framework is
-present locally, read `.touchstone/methodology/TOUCHSTONE.md` for the process. This is an
-optional, dev-only convenience; it is gitignored and not part of the published tool.
+own skills or methodology (not when *using* the gauntlet), read
+`.touchstone/methodology/TOUCHSTONE.md` for the process. When orchestrating a Claude
+reviewer, also read `.touchstone/methodology/references/external-review-reverse.md` (the
+reverse cross-model wrapper contract). The methodology is vendored and committed for
+contributors; only Touchstone's working artifacts under `.touchstone/` are gitignored. It
+is a dev-only convenience, not part of the gauntlet.

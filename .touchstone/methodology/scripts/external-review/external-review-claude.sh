@@ -24,7 +24,7 @@
 #     2. FAIL-CLOSED PREFLIGHT — `claude auth status --json` is a LOCAL keychain
 #        read (no inference, no spend). The review is invoked ONLY if it reports
 #        loggedIn==true, authMethod=="claude.ai", apiProvider=="firstParty",
-#        and subscriptionType in {pro,max}. (auth status is BLIND to a bare
+#        and subscriptionType in {pro,max,team}. (auth status is BLIND to a bare
 #        ANTHROPIC_API_KEY, which is why the env scrub is the authoritative
 #        defense against that one route.)
 #
@@ -97,7 +97,7 @@ Usage: external-review-claude.sh --prompt <file> --schema <file> \
                     read-only tool set: Read,Grep,Glob + --add-dir <dir>). When
                     omitted the reviewer is prompt-only (--tools "") and the
                     orchestrator must inline all code into the prompt-file.
-  --model           Reviewer model pin (default: claude-opus-4-8).
+  --model           Reviewer model pin (default: claude-opus-5-5).
   --effort          Effort level: low|medium|high|xhigh|max (default: high).
   --max-budget-usd  Hard subscription-spend cap for the call (default: 5).
   --web-search      Enable Claude WebSearch/WebFetch for this round: on|off
@@ -156,7 +156,7 @@ if [ -z "${HOME:-}" ]; then
   exit 2
 fi
 
-MODEL="claude-opus-4-8"
+MODEL="claude-opus-5-5"
 EFFORT="high"
 MAX_BUDGET_USD="5"
 PROMPT=""
@@ -433,7 +433,7 @@ logged_in = d.get("loggedIn") is True
 method = d.get("authMethod")
 provider = d.get("apiProvider")
 sub = d.get("subscriptionType")
-approved_subscriptions = {"pro", "max"}
+approved_subscriptions = {"pro", "max", "team"}
 sub_ok = isinstance(sub, str) and sub.lower() in approved_subscriptions
 if logged_in and method == "claude.ai" and provider == "firstParty" and sub_ok:
     print(f"OK subscription={sub}")

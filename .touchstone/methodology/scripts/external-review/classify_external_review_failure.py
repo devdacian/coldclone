@@ -200,7 +200,7 @@ def classify(payload: dict[str, Any]) -> dict[str, Any]:
             result.update(
                 {
                     "classification": "reverse_wrapper_post_preflight_auth_transient",
-                    "reason": "reverse wrapper passed auth preflight, but Claude returned a zero-usage 401; run sterile no-repo smoke probes, then retry the same reverse wrapper once with fresh findings/log paths if smoke succeeds",
+                    "reason": "reverse wrapper passed auth preflight, but Claude returned a zero-usage 401; run sterile no-repo smoke probes, then retry the same reverse wrapper once with fresh findings/log/wrapper-stderr-log paths if smoke succeeds",
                 }
             )
             return result

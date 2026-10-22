@@ -32,8 +32,9 @@
 #          prints to stdout and this wrapper redirects to the log).
 #
 # Exit codes:
-#   0 — HEALTHY round: a turn.completed event is present AND no turn.failed /
-#       error event is present. The findings-file is ready to parse.
+#   0 — HEALTHY round: a turn.completed event is present AND no turn.failed
+#       event and no error event other than a Codex `Reconnecting...` transport
+#       notice is present. The findings-file is ready to parse.
 #   1 — UNHEALTHY round: no turn.completed, or a failure event is present
 #       (includes the codex-binary-missing / launch-failure case, which lands
 #       in the log). The orchestrator reads the json-log to classify
@@ -60,7 +61,7 @@ Usage: external-review-codex.sh --prompt <file> --schema <file> --findings <file
   --log           Output path for the JSONL event stream (redirected stdout).
   --cd            REQUIRED. Repo the reviewer reads (no default — a forgotten
                   --cd is a loud exit-2 config error).
-  --model         Reviewer model pin (default: gpt-5.5).
+  --model         Reviewer model pin (default: gpt-6.1-sol).
   --effort        Reasoning effort (default: high — the field-validated level).
   --web-search    Enable the Codex hosted web_search tool for this round:
                   on|off (default: off). The off/default path passes
@@ -84,7 +85,7 @@ EOF
 # required-arg check below fails LOUD on a forgotten --cd (exit 2) instead of
 # silently reviewing the wrong dir.
 CD_DIR=""
-MODEL="gpt-5.5"
+MODEL="gpt-6.1-sol"
 EFFORT="high"
 PROMPT=""
 SCHEMA=""
@@ -306,8 +307,10 @@ done
 wait "$REVIEW_PID" 2>/dev/null
 
 # Structural health check + token-usage surfacing. The health verdict is success
-# iff some event has type == "turn.completed" AND no event has type in
-# {turn.failed, error}. Each line is parsed as JSON and the `type` field matched
+# iff some event has type == "turn.completed" AND no event has type
+# "turn.failed" AND every "error" event is a Codex transport notice (its string
+# message starts "Reconnecting..."; the stream resumed, and turn.completed
+# proves it). Each line is parsed as JSON and the `type` field matched
 # exactly — NEVER a substring scan, because a review whose content discusses
 # "turn.failed" / "error" (or quotes the event names) would trip a naive grep.
 # When a turn.completed event carries a `usage` block, the token figures are
@@ -339,8 +342,12 @@ try:
                 u = evt.get("usage")
                 if isinstance(u, dict):
                     usage = u  # last turn.completed wins
-            elif etype in ("turn.failed", "error"):
+            elif etype == "turn.failed":
                 failed = True
+            elif etype == "error":
+                msg = evt.get("message")
+                if not (isinstance(msg, str) and msg.startswith("Reconnecting...")):
+                    failed = True
 except OSError:
     sys.exit(1)
 
@@ -385,5 +392,5 @@ if [ "$health" -eq 0 ]; then
   exit 0
 fi
 
-echo "external-review-codex: UNHEALTHY (no turn.completed, or a turn.failed/error event present) -- inspect $LOG to classify retry-vs-skip" >&2
+echo "external-review-codex: UNHEALTHY (no turn.completed, or a turn.failed/non-reconnect error event present) -- inspect $LOG to classify retry-vs-skip" >&2
 exit 1
