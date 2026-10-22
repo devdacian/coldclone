@@ -18,7 +18,7 @@ virtual machine, container, or sandbox), not a replacement for one.
 - **`ioc_scan.py`** — a known-malicious-dependency tripwire that greps lockfiles
   (npm / PyPI / cargo / Go / …) against a maintained indicator list. It reports
   trusted exact malicious-version evidence for npm-family (including Bun), Cargo,
-  and Python (`uv.lock`, `poetry.lock`, `requirements.txt` pins) lockfiles when available, while preserving package-wide hits for all-malicious
+  and Python (`uv.lock`, `poetry.lock`, pip requirements-file pins) lockfiles when available, while preserving package-wide hits for all-malicious
   identities. Read-only; no install or execution. Its optional OSV fallback uses
   the network by default and can be disabled with `--offline`.
 - **`coldclone.sh`** — orchestrates a hardened clone (symlinks off, LFS filters
@@ -44,7 +44,8 @@ provenance but are not required for clearance.
 Exact extraction covers package-lock, Yarn Classic, structurally validated Yarn
 Berry `npm:` locators (lockfile `__metadata.version` 6, 8, 9 and 10; any other
 generation keeps a version-scoped hit), structurally validated pnpm package keys/importer
-versions, Bun (`bun.lock` text and the binary `bun.lockb`, formats 2 and 3), and
+versions (`overrides:` selectors are not install records; importer versions may
+carry a peer suffix such as `1.7.7(debug@4.3.7)`), Bun (`bun.lock` text and the binary `bun.lockb`, formats 2 and 3), and
 Cargo. npm-family package managers download a recorded tarball URL verbatim
 (package-lock and Yarn Classic `resolved`, pnpm `resolution.tarball`, Bun's
 tarball field), and a hand-edited lockfile can forge the matching `integrity`
@@ -70,17 +71,43 @@ Python exact extraction (`PyPI`) covers three files. PEP 440 equality applies
 - **`poetry.lock`** (lock-version 2.x): a matching package is trusted only with no
   source table (PyPI) or a `legacy` index source and a non-empty `files` list
   whose filenames all record that name and version.
-- **`requirements.txt`**, read like pip (its line splitting, `\` continuation and
-  comment rules): only `name[extras] == V` (optional environment marker and
+- **pip requirements files** (`requirements*.txt`, `*-requirements.txt`,
+  `constraints*.txt`, and `*.txt` directly in a `requirements/` directory — the
+  same family the sanitizer recognizes — plus any in-tree file reached by an
+  include), read like pip (its line splitting, `\` continuation and comment rules): only `name[extras] == V` (optional environment marker and
   `--hash` options) pins a release. A range, bare name, `===`, wildcard, URL,
   editable/VCS line, or `${VAR}` naming the package keeps the hit; a bare wheel or
   sdist URL/path is recognized by its filename (also percent-decoded). Index
   options (`--extra-index-url`, `-f`, …) do not change which release a pin names.
-  A `requirements.txt` pip would decode as something else (a UTF-16/32
+  A requirements file pip would decode as something else (a UTF-16/32
   byte-order mark, or a first `coding:` cookie naming a non-UTF-8 codec) fails
-  closed; one that is not valid UTF-8 cannot clear a version-scoped name. `-r` /
-  `-c` includes are not followed, and only files literally named
-  `requirements.txt` are scanned.
+  closed; one that is not valid UTF-8 cannot clear a version-scoped name.
+
+`-r` / `-c` includes (every spelling pip accepts, read as a superset) are
+followed the way pip resolves them — relative to the including file (lexically,
+as pip ≥ 24.3 does; every raw `..` prefix is also checked, as older pip opens it) —
+and the target is read as a requirements file whatever its name, including in
+otherwise skipped directories such as `venv/`. An include the scan cannot inspect
+fails it closed: a URL (`-c https://…`, e.g. Airflow-style remote constraints,
+is never fetched), an absolute path or one leaving the tree (`-r /app/base.txt`),
+a missing target (often an uninitialized submodule: fetch with `--submodules`),
+a symlink anywhere on the path, a non-regular file, a spelling another OS reads
+as a different file (`dir\file`, `C:`, a trailing dot or space, or another
+letter case than the file on disk), and a `${VAR}` in the target, at the start of
+the line, or in an option name (`${LINE}`, `--${OPT}=x`), and any `-r` / `-c` text at
+all in a requirements file that is not valid UTF-8 (pip then decodes it with the
+install host's locale codec, whose multibyte sequences can join, split, or hide
+words; a hyphenated name such as `pre-commit` refuses there too). pip before
+25.0 applies the locale codec to valid UTF-8 too; for such files with non-ASCII
+bytes the scan also follows, best effort, any in-tree target those decodings
+would expose, without refusing. Locale codecs are assumed ASCII-compatible
+(an EBCDIC locale would hide every name from any byte-level scan). A `${VAR}` inside a
+value or as a later word (`--extra-index-url https://${TOKEN}@host/simple`,
+`--pre ${X}`) is not modeled: its value comes from the install environment. An
+include naming a directory is a non-gating `NOTE`. Clearing is per file: a bare
+`litellm` still halts even when an included constraints file pins a clean
+version. On a case-insensitive checkout (macOS), two committed paths that differ
+only in case collapse into one, which no scan of the checked-out tree can see.
 
 `Pipfile.lock` has no exact extractor yet, so a version-scoped PyPI name there
 always halts. Both TOML lockfiles are parsed with `tomllib` (Python ≥ 3.11), and

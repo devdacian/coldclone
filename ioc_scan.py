@@ -24,9 +24,13 @@ This is an identity-and-version-exact denylist (high precision via exact
 matching; it catches only KNOWN drops, and its few residual false positives fail
 SAFE — see the accepted limitation below). Trusted exact-version evidence is
 extracted locally from npm-family (package-lock, Yarn, pnpm, Bun text and
-binary), Cargo, and Python (uv.lock, poetry.lock, requirements.txt pins; PEP 440
-equality) lockfiles. A VERSION-only package (no plain entry) is ecosystem-scoped
-and matches only that ecosystem's lockfiles. By default the scanner
+binary), Cargo, and Python (uv.lock, poetry.lock, and pip requirements-file
+pins; PEP 440 equality) lockfiles. The pip requirements family
+(`requirements*.txt`, `*-requirements.txt`, `constraints*.txt`,
+`requirements/*.txt`) is discovered by name, and its `-r` / `-c` includes are
+followed to in-tree files, which are read as requirements whatever their name.
+A VERSION-only package (no plain entry) is ecosystem-scoped and matches only
+that ecosystem's lockfiles. By default the scanner
 also makes opportunistic exact-version OSV API queries for version-scoped
 packages; `--offline` disables those queries. It complements — never replaces —
 the auto-execution sanitizer
@@ -36,7 +40,10 @@ Exit codes: 0 clean, 1 IoC-list stale (>7 days) but no hit, 2 IoC hit (HALT),
 3 config error — the gate could not actually run, so FAIL CLOSED and HALT:
 IoC list missing / unreadable / EMPTY / invalid, a discovered lockfile that
 could not be scanned (unreadable, oversized, malformed structured data, or a
-symlink we refuse to follow), or a bad repo path. Only 0 and 1 mean "no malicious dependency found — proceed" (1 also
+symlink we refuse to follow), a requirements include that cannot be inspected
+(remote, environment-dependent, outside the tree, missing, or reached through a
+symlink), or a bad repo path. Only 0 and 1 mean "no malicious dependency
+found — proceed" (1 also
 flags a stale or header-less list). A repo with simply no lockfiles is
 legitimately clean -> 0.
 
@@ -67,6 +74,7 @@ import posixpath
 import json
 import os
 import re
+import stat
 import struct
 import sys
 import urllib.error
@@ -109,6 +117,49 @@ _LOCKFILE_NAMES = frozenset({
 # `-` as DISTINCT packages, so normalizing there would create false matches.
 _PYPI_LOCKFILES = frozenset({"requirements.txt", "poetry.lock", "Pipfile.lock",
                              "uv.lock"})
+
+# pip requirements/constraints files are a SPLIT family (requirements-dev.txt,
+# requirements/base.txt, constraints.txt, …), all read as `requirements.txt`.
+# Mirrors sanitize_repo.py's predicate exactly (a test asserts parity).
+_REQUIREMENTS_NAME_RE = re.compile(   # bounded quantifiers (ReDoS invariant)
+    r"(?:requirements[\w.-]{0,128}|[\w.-]{1,128}-requirements|constraints[\w.-]{0,128})\.txt")
+# pip's own spellings: a nested file that is a URL is fetched, and `${VAR}` is
+# expanded from the install environment.
+_PIP_SCHEME_RE = re.compile(r"^(http|https|file):", re.I)
+_PIP_ENV_VAR_RE = re.compile(r"\$\{[A-Z0-9_]+\}")
+_SHELL_QUOTING = str.maketrans("", "", "\"'\\")
+# Characters that can sit between `-` and `r`/`c` in the bytes yet vanish
+# before pip's option parser sees them: shlex quoting and escapes, and the line
+# break of a `\` continuation.
+_INCLUDE_GAP_CHARS = str.maketrans("", "", "\"'\\\r\n\x0b\x0c\x1c\x1d\x1e\x85")
+_NON_ASCII_RUN_RES = (
+    re.compile(r"[\x80-\xff]+"),
+    re.compile(r"(?:[\x80-\xff][\x30-\x39\x40-\x7e]?)+"),
+)
+_INCLUDE_TARGET_LIMIT = 10_000
+_INCLUDE_RECORD_LIMIT = 100
+
+
+def _is_requirements_name(parent_name: str | None, name: str) -> bool:
+    """True for a pip requirements-family file; `parent_name` is None at the root."""
+    if _REQUIREMENTS_NAME_RE.fullmatch(name):
+        return True
+    return name.endswith(".txt") and parent_name == "requirements"
+
+
+def _lockfile_kind(path: Path, root: Path | None = None) -> str | None:
+    """The format a discovered file is read as, or None when it is not scanned.
+
+    Every requirements-family member is `requirements.txt`. `root` (the scan
+    root) keeps a clone named `requirements` from making its own top-level
+    `*.txt` files pip inputs.
+    """
+    if path.name in _LOCKFILE_NAMES and path.name != "requirements.txt":
+        return path.name
+    parent_name = None if root is not None and path.parent == root else path.parent.name
+    if _is_requirements_name(parent_name, path.name):
+        return "requirements.txt"
+    return None
 
 _LOCKFILE_POLICY_ECOSYSTEMS = {
     "package-lock.json": "npm",
@@ -271,6 +322,35 @@ class IocHit:
     whole_file_kind: str | None = None
     affected_set_complete: dict[str, int] = field(default_factory=dict)
     lockfile_text: str | None = field(default=None, repr=False, compare=False)
+    # The format the file was read as; an included file is `requirements.txt`
+    # whatever its name. None means "derive it from the path".
+    lockfile_kind: str | None = None
+
+
+@dataclass
+class _DirectoryListings:
+    """Directory listings for the include spelling check, with one budget.
+
+    `names[path]` is None for a listing that exceeded the budget; `examined`
+    counts every entry read so far, across all listings.
+    """
+    names: dict[str, frozenset[str] | None] = field(default_factory=dict)
+    examined: int = 0
+
+
+@dataclass(frozen=True)
+class RequirementsInclude:
+    """One `-r` / `-c` directive in a requirements file and what became of it.
+
+    outcome: "followed" (the target was scanned), "note" (non-gating: the
+    target is a directory, which pip cannot install from), or "refused" (the
+    target could not be inspected, so coverage is incomplete).
+    """
+    source: Path
+    line_no: int
+    target: str  # display-safe; a URL keeps only scheme and host
+    outcome: str
+    reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -471,7 +551,7 @@ def discover_lockfiles(root: Path) -> tuple[list[Path], list[Path], list[Path]]:
                             is_directory = entry.is_dir(follow_symlinks=True)
                             if is_directory and entry.name in _SKIP_DIRS:
                                 continue
-                            if is_directory or entry.name in _LOCKFILE_NAMES:
+                            if is_directory or _lockfile_kind(path, root) is not None:
                                 if len(found) + len(symlinked) >= _LOCKFILE_COUNT_LIMIT:
                                     traversal_errors.append(limit_error("lockfile"))
                                     return sorted(found), sorted(symlinked), sorted(
@@ -483,7 +563,7 @@ def discover_lockfiles(root: Path) -> tuple[list[Path], list[Path], list[Path]]:
                             if entry.name not in _SKIP_DIRS:
                                 pending.append(path)
                             continue
-                        if entry.name not in _LOCKFILE_NAMES:
+                        if _lockfile_kind(path, root) is None:
                             continue
                         if not entry.is_file(follow_symlinks=False):
                             traversal_errors.append(path)
@@ -1628,8 +1708,18 @@ def _extract_pnpm_lock_version_info(
         direct_snapshot_nodes.update(index.children.get(snapshot_section, ()))
         if _yaml_has_duplicate_child_keys(index, snapshot_section):
             untrusted = True
+    # `overrides:` keys are resolution selectors (`axios@>=0.19.0 <0.34.0`), not
+    # installed records; whatever an override selects is in `packages`.
+    override_nodes: set[int] = set()
+    stack = list(root_by_key.get("overrides", ()))
+    while stack:
+        idx = stack.pop()
+        override_nodes.add(idx)
+        stack.extend(index.children.get(idx, ()))
     snapshot_versions: set[str] = set()
     for idx, node in enumerate(nodes):
+        if idx in override_nodes:
+            continue
         match = modern_package_key_re.fullmatch(
             node.key
         ) or legacy_package_key_re.fullmatch(
@@ -1775,6 +1865,10 @@ def _extract_pnpm_lock_version_info(
                         if len(version_fields) == 1
                         else None
                     )
+                    if version is not None and version.endswith(")") and "(" in version:
+                        # A peer-resolution suffix (`1.7.7(debug@4.3.7)`), as
+                        # the package and snapshot keys carry.
+                        version = version[: version.index("(")]
                     specifier = (
                         _strip_balanced_yaml_scalar(specifier_fields[0][1])
                         if len(specifier_fields) == 1
@@ -2853,6 +2947,344 @@ def _extract_requirements_version_info(
     )
 
 
+def _env_builds_directive(line: str) -> bool:
+    """True when a pip `${VAR}` reference could expand into option syntax.
+
+    pip expands variables before splitting a line into a requirement and its
+    options, so a line starting `${LINE}` or an option named `--${OPT}=x` can
+    become `-r x`. A reference inside a value (`git+https://${TOKEN}@host/…`,
+    `-e ${DIR}/pkg`, `--extra-index-url https://${TOKEN}@host/simple`) is left
+    alone: whitespace in such a value could still add an option, but that value
+    is outside the scanned files and refusing it would break ordinary
+    private-index lines (documented residual).
+    """
+    if "${" not in line:
+        return False
+    tokens = line.split()
+    if tokens and tokens[0].startswith("${"):
+        return True
+    return any(
+        token.startswith("-") and _PIP_ENV_VAR_RE.search(token.split("=", 1)[0])
+        for token in tokens
+    )
+
+
+def _shell_split(text: str) -> list[str]:
+    """`shlex.split(text)` (POSIX mode) in linear time.
+
+    shlex grows each token one character at a time, which is quadratic in the
+    token's length; a single huge word must not stall the host. Raises
+    ValueError where shlex does (an unclosed quote or a trailing escape).
+    """
+    words: list[str] = []
+    buffer: list[str] = []
+    in_word = False
+    index, length = 0, len(text)
+    while index < length:
+        char = text[index]
+        if char in " \t\r\n":
+            if in_word:
+                words.append("".join(buffer))
+                buffer, in_word = [], False
+            index += 1
+            continue
+        in_word = True
+        if char == "\\":
+            if index + 1 >= length:
+                raise ValueError("No escaped character")
+            buffer.append(text[index + 1])
+            index += 2
+        elif char == "'":
+            close = text.find("'", index + 1)
+            if close == -1:
+                raise ValueError("No closing quotation")
+            buffer.append(text[index + 1 : close])
+            index = close + 1
+        elif char == '"':
+            index += 1
+            while True:
+                if index >= length:
+                    raise ValueError("No closing quotation")
+                char = text[index]
+                if char == '"':
+                    index += 1
+                    break
+                if char == "\\":
+                    if index + 1 >= length:
+                        raise ValueError("No escaped character")
+                    if text[index + 1] in '"\\':
+                        buffer.append(text[index + 1])
+                        index += 2
+                        continue
+                buffer.append(char)
+                index += 1
+        else:
+            buffer.append(char)
+            index += 1
+    if in_word:
+        words.append("".join(buffer))
+    return words
+
+
+def _line_include_targets(line: str, *, plain_split: bool = False) -> list[str]:
+    """`-r` / `-c` targets on one logical line, as a deliberate superset of pip.
+
+    pip follows only the first include of a line without a requirement; this
+    reads every spelling optparse could accept (`-r X`, `-rX`, `--requirement X`,
+    `--requirement=X`, unambiguous long-option prefixes) anywhere in the options
+    part. An extra target only adds a scan or a refusal; it cannot hide one.
+    `plain_split` also reads whitespace-split words: for a file pip may decode
+    with another codec, a `\\` that codec absorbs into a multibyte character
+    must not escape a space and merge `-r` into a neighbouring word.
+    """
+    tokens = line.split(" ")
+    # pip's break_args_options: the requirement part ends at the first option.
+    start = next(
+        (index for index, token in enumerate(tokens) if token.startswith("-")),
+        len(tokens),
+    )
+    options = " ".join(tokens[start:])
+    # shlex only deletes quote/escape characters, so any `-r` / `-c` / `--r…`
+    # / `--c…` it can produce is already adjacent once they are deleted.
+    bare = options.translate(_SHELL_QUOTING)
+    if "-r" not in bare and "-c" not in bare:
+        return []
+    try:
+        words = _shell_split(options)  # pip: shlex.split
+    except ValueError:
+        words = options.split()
+    targets: list[str] = []
+    if plain_split:
+        words = [*words, "", *options.split()]
+    for index, word in enumerate(words):
+        following = words[index + 1] if index + 1 < len(words) else None
+        if word in ("-r", "-c"):
+            value = following
+        elif word.startswith(("-r", "-c")) and not word.startswith("--"):
+            value = word[2:]
+        elif word.startswith("--"):
+            name, equals, rest = word[2:].partition("=")
+            if not name or not (
+                "requirement".startswith(name) or "constraint".startswith(name)
+            ):
+                continue
+            value = rest if equals else following
+        else:
+            continue
+        if value:
+            targets.append(value)
+    return targets
+
+
+def _requirements_include_lines(
+    text: str, raw: bytes
+) -> tuple[list[tuple[int, str]], list[tuple[int, str]], bool]:
+    """Lines whose includes pip could follow, over every decoding pip might use.
+
+    Returns (lines, locale_lines, utf8). `lines` are the logical lines of the
+    UTF-8 view. pip decodes invalid UTF-8 — and, before pip 25.0, every file —
+    with the install host's locale codec, which can break lines (latin-1
+    `\\x85`), swallow a continuation `\\` (GBK, cp932), or produce whitespace
+    where the UTF-8 view does not; so a file with any byte >= 0x80 also yields
+    `locale_lines` from latin-1 views and every comment-stripped physical line.
+    `utf8` says whether the bytes were valid UTF-8.
+    """
+    lines = list(_pip_logical_lines(text))
+    try:
+        raw.decode("utf-8")
+        utf8 = True
+    except UnicodeDecodeError:
+        utf8 = False
+    locale_lines: list[tuple[int, str]] = []
+    if raw.isascii():
+        return lines, locale_lines, utf8
+    latin = raw.decode("latin-1")
+    # A multibyte sequence can decode to whitespace (U+3000 in GBK, cp932,
+    # cp949) or a line break (U+2028 in GB18030), and its trail bytes may
+    # be ASCII (cp932 `\\x81@`, GB18030 `\\x816\\xa65`). No CJK trail byte
+    # is `-`, so reading each high-byte run (with and without the ASCII
+    # trail bytes it may absorb) as a space, and again as a line break,
+    # exposes any option those decodings could.
+    views = [latin] + [
+        pattern.sub(separator, latin)
+        for pattern in _NON_ASCII_RUN_RES
+        for separator in (" ", "\n")
+    ]
+    for view in views:
+        locale_lines.extend(_pip_logical_lines(view))
+    for view in (text, *views):
+        for line_no, line in enumerate(view.splitlines(), start=1):
+            stripped = _strip_pip_comment(line.rstrip("\\"))
+            if stripped:
+                locale_lines.append((line_no, stripped))
+    return lines, locale_lines, utf8
+
+
+def _non_utf8_include_text(raw: bytes) -> bool:
+    """True when invalid-UTF-8 bytes may hold an include in some locale decoding.
+
+    A deliberately blunt superset: delete every character that pip's
+    continuation joining or shlex can remove between `-` and the option letter
+    (quotes, escapes, line breaks) and every high-byte run, alone or with the
+    ASCII trail bytes a multibyte sequence may absorb (GB18030 `\\x816\\xa65`
+    is U+2028); then any `-r` / `-c` (which `--requirement` / `--constraint`
+    contain) counts. No word-boundary test, so no neighbouring text can mask
+    one; names such as `pre-commit` therefore also refuse in such files.
+    """
+    latin = raw.decode("latin-1")
+    for view in (latin, *(pattern.sub("", latin) for pattern in _NON_ASCII_RUN_RES)):
+        squashed = view.translate(_INCLUDE_GAP_CHARS)
+        if "-r" in squashed or "-c" in squashed:
+            return True
+    return False
+
+
+def _include_display(target: str) -> str:
+    """A display-safe include target: a URL shows only its scheme and host."""
+    if _PIP_SCHEME_RE.match(target):
+        scheme = target.split(":", 1)[0].lower()
+        rest = target.split(":", 1)[1]
+        if rest.startswith("//"):
+            host = _HOST_RE.match(rest[2:].split("/", 1)[0].rsplit("@", 1)[-1])
+            return f"{scheme}://{_display_safe(host.group().lower()) or '(no host)'}"
+        return f"{scheme}:"
+    return _display_safe(target)
+
+
+def _include_spelling_refusal(target: str) -> str | None:
+    """Why a target cannot be resolved from its text alone, or None.
+
+    Checked before any path normalization or caching: `x\\foo/../base.in`
+    normalizes to `base.in` here but is `x/base.in` to Windows pip.
+    """
+    if _PIP_SCHEME_RE.match(target):
+        return "remote include (not fetched)"
+    if "${" in target:
+        return "environment-dependent include"
+    if "\\" in target or ":" in target or any(
+        part.endswith((".", " ")) and part not in (".", "..")
+        for part in target.split("/")
+    ):
+        # Windows pip reads `dir\file`, `C:…`, and trailing-dot/space names as
+        # other files; a committed decoy with the literal name must not stand
+        # in for them.
+        return "include path spelled for another OS"
+    return None
+
+
+_INCLUDE_MISSING = (
+    "include target missing — an uninitialized submodule (fetch with "
+    "--submodules) or a generated file is the usual benign cause"
+)
+
+
+def _resolve_include(
+    root: Path,
+    including: Path,
+    target: str,
+    listings: _DirectoryListings | None = None,
+) -> tuple[str, str, str | None]:
+    """Resolve one include target as pip would, without following symlinks.
+
+    Returns (outcome, reason, path): outcome "follow" (path is an in-tree
+    regular file), "note" (a directory pip cannot install from), or "refused".
+    Resolution is lexical, like pip's `abspath(join(dirname(file), target))`;
+    every component is `lstat`ed so a symlink anywhere refuses, and must appear
+    with exactly that spelling in its parent's listing: on a case-insensitive
+    or normalizing volume `EVIL.txt` would otherwise open a different committed
+    file (`evil.txt`) than a case-sensitive installer reads. `listings` caches
+    directory listings across calls; every entry examined counts against one
+    `_DISCOVERY_ENTRY_LIMIT` budget, so includes into a huge (skipped)
+    directory cannot force repeated or unbounded listings.
+    """
+    if listings is None:
+        listings = _DirectoryListings()
+    refusal = _include_spelling_refusal(target)
+    if refusal is not None:
+        return "refused", refusal, None
+    root_text = os.path.normpath(str(root))
+    try:
+        path = os.path.normpath(os.path.join(os.path.dirname(str(including)), target))
+        inside = os.path.commonpath([root_text, path]) == root_text
+    except ValueError:
+        return "refused", "unresolvable include path", None
+    if not inside:
+        return "refused", "include outside the scanned tree", None
+    if ".." in target.split("/"):
+        # pip < 24.3 opens the joined path without normalizing it, so the OS
+        # walks `venv/..` through `venv` itself: every raw prefix must also be
+        # an in-tree directory reached without a symlink.
+        current = os.path.dirname(str(including)) if not os.path.isabs(target) else os.sep
+        for part in target.split("/"):
+            if part in ("", "."):
+                continue
+            current = os.path.dirname(current) if part == ".." else os.path.join(current, part)
+            if part == ".." or os.path.commonpath([root_text, current]) == current:
+                continue  # `..` itself, or an ancestor of the root (absolute)
+            if os.path.commonpath([root_text, current]) != root_text:
+                return "refused", "include outside the scanned tree", None
+            try:
+                mode = os.lstat(current).st_mode
+            except (FileNotFoundError, NotADirectoryError):
+                return "refused", _INCLUDE_MISSING, None
+            except (OSError, ValueError):
+                return "refused", "include target unreadable", None
+            if stat.S_ISLNK(mode):
+                return "refused", "include reached through a symlink", None
+    current = root_text
+    relative = os.path.relpath(path, root_text)
+    parts = [] if relative == os.curdir else relative.split(os.sep)
+    mode = 0
+    try:
+        mode = os.lstat(current).st_mode
+        for part in parts:
+            if current not in listings.names:
+                names: set[str] = set()
+                with os.scandir(current) as entries:
+                    for entry in entries:
+                        names.add(entry.name)
+                        listings.examined += 1
+                        if listings.examined > _DISCOVERY_ENTRY_LIMIT:
+                            listings.names[current] = None
+                            break
+                    else:
+                        listings.names[current] = frozenset(names)
+            listed = listings.names[current]
+            if listed is None:
+                return "refused", "include limit exceeded", None
+            if part not in listed:
+                # The installer's filesystem may resolve a spelling this host
+                # cannot (`dir\file`, a trailing dot, another letter case), so
+                # a missing target is not evidence that nothing is installed.
+                return "refused", _INCLUDE_MISSING, None
+            current = os.path.join(current, part)
+            mode = os.lstat(current).st_mode
+            if stat.S_ISLNK(mode):
+                return "refused", "include reached through a symlink", None
+    except (FileNotFoundError, NotADirectoryError):
+        return "refused", _INCLUDE_MISSING, None
+    except (OSError, ValueError):
+        return "refused", "include target unreadable", None
+    if stat.S_ISDIR(mode):
+        return "note", "include target is a directory", None
+    if not stat.S_ISREG(mode):
+        return "refused", "include target is not a regular file", None
+    return "follow", "", path
+
+
+def _read_lockfile_bytes(path: Path, limit: int) -> bytes:
+    """Read at most `limit` bytes, refusing symlinks and non-regular files.
+
+    `O_NONBLOCK` keeps a FIFO from blocking the open; `fstat` then rejects it.
+    """
+    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+    descriptor = os.open(path, flags)
+    with os.fdopen(descriptor, "rb") as stream:
+        if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+            raise OSError(f"not a regular file: {path}")
+        return stream.read(limit)
+
+
 _LOCKFILE_VERSION_EXTRACTORS: dict[
     str, Callable[[Path, str, str | None], LockfilePackageVersions]
 ] = {
@@ -2871,9 +3303,12 @@ _IOC_VERSION_ECOSYSTEMS = frozenset(_LOCKFILE_POLICY_ECOSYSTEMS.values())
 
 
 def _extract_lockfile_version_info(
-    lockfile: Path, package: str, text: str | None = None
+    lockfile: Path,
+    package: str,
+    text: str | None = None,
+    kind: str | None = None,
 ) -> LockfilePackageVersions:
-    extractor = _LOCKFILE_VERSION_EXTRACTORS.get(lockfile.name)
+    extractor = _LOCKFILE_VERSION_EXTRACTORS.get(kind or _lockfile_kind(lockfile) or "")
     if extractor is None:
         return LockfilePackageVersions(mixed_or_untrusted=True)
     return extractor(lockfile, package, text)
@@ -3302,6 +3737,9 @@ def ioc_grep(
     lockfiles: list[Path],
     iocs: Mapping[str, IocEntry],
     remote_sources: dict[str, dict[Path, set[str]]] | None = None,
+    *,
+    root: Path,
+    includes: list[RequirementsInclude] | None = None,
 ) -> tuple[list[IocHit], list[Path]]:
     """Scan each lockfile line-by-line and return (IocHit records, unreadable).
 
@@ -3312,6 +3750,11 @@ def ioc_grep(
     When `remote_sources` is given, it is filled with the npm-family fetch
     URLs on non-default hosts ({host label: {lockfile: {url}}}) for the
     non-gating registry-host advisory.
+
+    Requirements-file `-r` / `-c` includes are followed to in-tree files under
+    `root`, which join the scan as requirements whatever their name. An include
+    that cannot be inspected lists its requirements file in `unreadable`; when
+    `includes` is given, it receives a record per directive (capped per outcome).
     """
     # Normalized view of the IoC set for PyPI matching (built once). A multimap:
     # names that normalize alike are each classified, none overwrites another.
@@ -3322,15 +3765,159 @@ def ioc_grep(
     unreadable: list[Path] = []
     total_bytes = 0
     aggregate_limit_reached = False
-    for lf in lockfiles:
+    # (path, kind) work items. Strict items — discovered files and includes
+    # from lines pip reads — are all scanned before speculative ones: targets
+    # that only a pip < 25.0 locale view of valid UTF-8 exposes, resolved only
+    # once the strict graph is complete (so a file reached both ways is always
+    # strict). A speculative file's hits count, its own coverage gaps do not,
+    # so ordinary UTF-8 comments cannot fail a clean repo closed.
+    work = [(lf, _lockfile_kind(lf, root) or lf.name) for lf in lockfiles]
+    speculative_work: list[tuple[Path, str]] = []
+    queued = {(os.path.normpath(str(lf)), kind) for lf, kind in work}
+    resolved_targets: dict[str, tuple[str, str, str | None]] = {}
+    listings = _DirectoryListings()
+    record_counts: dict[str, int] = {}
+    current_speculative = False
+    deferred_targets: list[tuple[Path, int, str]] = []
+
+    def record_include(record: RequirementsInclude) -> None:
+        # Followed records are bounded by `_LOCKFILE_COUNT_LIMIT` (one per new
+        # work item) and keep the scanned count exact; others are capped.
+        if current_speculative and record.outcome != "followed":
+            return
+        count = record_counts.get(record.outcome, 0)
+        record_counts[record.outcome] = count + 1
+        if includes is not None and (
+            record.outcome == "followed" or count < _INCLUDE_RECORD_LIMIT
+        ):
+            includes.append(record)
+
+    def refuse(lf: Path, line_no: int, target: str, reason: str) -> None:
+        record_include(RequirementsInclude(lf, line_no, target, "refused", reason))
+        if lf not in unreadable:
+            unreadable.append(lf)
+
+    def enqueue(path: str, speculative: bool) -> bool:
+        key = (path, "requirements.txt")
+        if key in queued:
+            return False
+        if len(work) + len(speculative_work) >= _LOCKFILE_COUNT_LIMIT:
+            marker = root / ".coldclone-lockfile-limit-exceeded"
+            if not speculative and marker not in unreadable:
+                unreadable.append(marker)
+            return False
+        queued.add(key)
+        if speculative:
+            speculative_work.append((Path(path), "requirements.txt"))
+        else:
+            work.append((Path(path), "requirements.txt"))
+        return True
+
+    def follow_includes(lf: Path, text: str, raw: bytes) -> None:
+        primary, locale_lines, utf8 = _requirements_include_lines(text, raw)
+        if not utf8 and _non_utf8_include_text(raw):
+            # pip decodes invalid UTF-8 with the install host's locale codec,
+            # whose multibyte sequences can join, split, or hide lines and
+            # words; which include that yields cannot be settled here. The
+            # views below still follow what they can, so a hit surfaces first.
+            refuse(
+                lf, 0, "(not valid UTF-8)",
+                "include in a requirements file pip decodes with the install "
+                "host's locale codec",
+            )
+        # For valid UTF-8 the locale views model only pip < 25.0 on a non-UTF-8
+        # host locale: their targets are followed when they resolve to an
+        # in-tree file, speculatively, and never refuse (documented residual).
+        # They wait until every strict include is scanned, so they can never
+        # take queue or cache capacity a genuine include needs.
+        strict_count = len(primary) if utf8 else None
+        seen: set[tuple[str, bool]] = set()
+        for position, (line_no, line) in enumerate([*primary, *locale_lines]):
+            best_effort = strict_count is not None and position >= strict_count
+            if (line, best_effort) in seen:
+                continue  # the views repeat most lines verbatim
+            seen.add((line, best_effort))
+            if not best_effort and _env_builds_directive(line):
+                refuse(lf, line_no, "(line with ${…})", "environment-dependent directive")
+                continue
+            for target in _line_include_targets(line, plain_split=best_effort or not utf8):
+                if best_effort and not current_speculative:
+                    # Bounded like the resolution cache; excess best-effort
+                    # targets are dropped, never refused.
+                    if len(deferred_targets) < _INCLUDE_TARGET_LIMIT:
+                        deferred_targets.append((lf, line_no, target))
+                    continue
+                follow_target(lf, line_no, target, best_effort=best_effort)
+
+    def follow_target(lf: Path, line_no: int, target: str, *, best_effort: bool) -> None:
+        refusal = _include_spelling_refusal(target)
+        if refusal is not None and best_effort:
+            return
+        key = os.path.join(os.path.dirname(str(lf)), target)
+        if ".." not in target.split("/"):
+            # A `..` spelling is checked raw (see `_resolve_include`), so it
+            # must not share an answer with the normalized path it names.
+            key = os.path.normpath(key)
+        resolved = (
+            ("refused", refusal, None) if refusal is not None
+            else resolved_targets.get(key)
+        )
+        if resolved is None:
+            if len(resolved_targets) >= _INCLUDE_TARGET_LIMIT:
+                if best_effort:
+                    return
+                # Bound memory and lstat work; an unresolved include is
+                # incomplete coverage.
+                resolved = ("refused", "include limit exceeded", None)
+            else:
+                resolved = _resolve_include(root, lf, target, listings)
+                resolved_targets[key] = resolved
+        outcome, reason, path = resolved
+        display = _include_display(target)
+        if outcome != "follow" or path is None:
+            if best_effort:
+                return
+            if outcome == "refused":
+                refuse(lf, line_no, display, reason)
+            else:
+                record_include(
+                    RequirementsInclude(lf, line_no, display, outcome, reason)
+                )
+            return
+        if enqueue(path, current_speculative or best_effort):
+            record_include(RequirementsInclude(lf, line_no, display, "followed"))
+
+    index = speculative_index = 0
+    trim_from: int | None = None
+    while True:
+        if trim_from is not None:
+            # Coverage gaps of a speculative file are not coverage gaps.
+            del unreadable[trim_from:]
+            trim_from = None
+        if index < len(work):
+            lf, kind = work[index]
+            index += 1
+            current_speculative = False
+        elif deferred_targets:
+            current_speculative = True
+            pending, deferred_targets[:] = list(deferred_targets), []
+            for source, line_no, target in pending:
+                follow_target(source, line_no, target, best_effort=True)
+            continue
+        elif speculative_index < len(speculative_work):
+            lf, kind = speculative_work[speculative_index]
+            speculative_index += 1
+            current_speculative = True
+            trim_from = len(unreadable)
+        else:
+            break
         if aggregate_limit_reached:
             unreadable.append(lf)
             continue
         try:
             remaining_bytes = _LOCKFILE_TOTAL_SIZE_LIMIT - total_bytes
             read_limit = min(_LOCKFILE_SIZE_LIMIT + 1, remaining_bytes + 1)
-            with lf.open("rb") as stream:
-                raw = stream.read(read_limit)
+            raw = _read_lockfile_bytes(lf, read_limit)
             total_bytes += len(raw)
             if total_bytes > _LOCKFILE_TOTAL_SIZE_LIMIT:
                 aggregate_limit_reached = True
@@ -3339,21 +3926,23 @@ def ioc_grep(
             if len(raw) > _LOCKFILE_SIZE_LIMIT:
                 unreadable.append(lf)
                 continue
-            if lf.name == "bun.lockb":
+            if kind == "bun.lockb":
                 # Binary: latin-1 is a lossless bytes<->str mapping, so the
                 # exact extractor can recover the original bytes later.
                 text = raw.decode("latin-1")
             else:
-                strict = lf.name in _JSON_LOCKFILES or lf.name in _JSONC_LOCKFILES
+                strict = kind in _JSON_LOCKFILES or kind in _JSONC_LOCKFILES
                 text = raw.decode("utf-8", errors="strict" if strict else "replace")
         except (OSError, UnicodeError):
             unreadable.append(lf)
             continue
-        is_pypi = lf.name in _PYPI_LOCKFILES
-        is_npm = _LOCKFILE_POLICY_ECOSYSTEMS.get(lf.name) == "npm"
-        foreign_codec = lf.name == "requirements.txt" and _requirements_foreign_codec(raw)
-        scope_ecosystem = _LOCKFILE_SCOPE_ECOSYSTEMS.get(lf.name)
+        is_pypi = kind in _PYPI_LOCKFILES
+        is_npm = _LOCKFILE_POLICY_ECOSYSTEMS.get(kind) == "npm"
+        foreign_codec = kind == "requirements.txt" and _requirements_foreign_codec(raw)
+        scope_ecosystem = _LOCKFILE_SCOPE_ECOSYSTEMS.get(kind)
         recorded_in_file: set[str] = set()
+        if kind == "requirements.txt" and not foreign_codec:
+            follow_includes(lf, text, raw)
 
         def note_sources(value: str) -> None:
             """Record one fetch field's URL for the registry-host advisory."""
@@ -3413,10 +4002,11 @@ def ioc_grep(
                         version_evidence=entry.version_evidence,
                         affected_set_complete=entry.affected_set_complete,
                         lockfile_text=text,
+                        lockfile_kind=kind,
                     ))
                     recorded_in_file.add(matched)
 
-        if lf.name == "bun.lockb":
+        if kind == "bun.lockb":
             parsed = _parse_bun_lockb(raw)
             if parsed is None:
                 # Surface any raw identity first, but an unparsed binary
@@ -3439,12 +4029,12 @@ def ioc_grep(
             continue
 
         unsupported_encoding = foreign_codec or _has_unsupported_identity_encoding(
-            lf.name, text
+            kind, text
         )
         for line_no, line in enumerate(text.splitlines(), start=1):
             record_candidates(line, line_no)
             if (
-                lf.name == "yarn.lock"
+                kind == "yarn.lock"
                 and not unsupported_encoding
                 and ":" in line
                 and line[:1].isspace()
@@ -3456,13 +4046,13 @@ def ioc_grep(
                     value = _yarn_field_value(content, key)
                     if value is not None:
                         note_sources(_yaml_scalar_text(value))
-        if lf.name == "requirements.txt" and "\\" in text:
+        if kind == "requirements.txt" and "\\" in text:
             # pip joins `\` continuations first: `lite\` + `llm==1.0` installs
             # `litellm`, which no single raw line spells. (Without a backslash
             # every logical line is a substring of a raw line already scanned.)
             for line_no, line in _pip_logical_lines(text):
                 record_candidates(line, line_no)
-        if lf.name == "pnpm-lock.yaml" and not unsupported_encoding:
+        if kind == "pnpm-lock.yaml" and not unsupported_encoding:
             for node in _yaml_mapping_index(text.splitlines()).nodes:
                 if "://" not in _canonical_url_text(node.value):
                     continue
@@ -3489,7 +4079,7 @@ def ioc_grep(
             unreadable.append(lf)
             continue
 
-        if lf.name in _TOML_LOCKFILES and tomllib is not None:
+        if kind in _TOML_LOCKFILES and tomllib is not None:
             document = _parse_toml(text)
             if document is None:
                 # Malformed TOML (duplicate keys included) cannot be certified
@@ -3513,7 +4103,7 @@ def ioc_grep(
                     # Decoded TOML may reveal `lite\u006clm` as `litellm`.
                     record_candidates(string, 0)
 
-        if lf.name in _JSON_LOCKFILES or lf.name in _JSONC_LOCKFILES:
+        if kind in _JSON_LOCKFILES or kind in _JSONC_LOCKFILES:
             duplicate_key = False
 
             def object_pairs(
@@ -3528,7 +4118,7 @@ def ioc_grep(
                 return result
 
             try:
-                if lf.name in _JSONC_LOCKFILES:
+                if kind in _JSONC_LOCKFILES:
                     decoded, duplicate_key = _load_jsonc(text)
                 else:
                     decoded = json.loads(text, object_pairs_hook=object_pairs)
@@ -3547,7 +4137,7 @@ def ioc_grep(
                 if isinstance(value, dict):
                     stack.extend(value.values())
                     strings = value.keys()
-                    if lf.name not in _JSONC_LOCKFILES:
+                    if kind not in _JSONC_LOCKFILES:
                         # package-lock: only fetch fields, not funding/repo
                         # metadata URLs.
                         for field_name in ("resolved", "version"):
@@ -3559,7 +4149,7 @@ def ioc_grep(
                     continue
                 elif isinstance(value, str):
                     strings = (value,)
-                    if lf.name in _JSONC_LOCKFILES:
+                    if kind in _JSONC_LOCKFILES:
                         note_sources(value)
                 else:
                     continue
@@ -3585,7 +4175,7 @@ def classify_ioc_hits(
     tarball URL that is exactly that release's.
     """
     classified: list[IocHit] = []
-    processed_version_aware: set[tuple[Path, str, str]] = set()
+    processed_version_aware: set[tuple[Path, str, str, str]] = set()
     extraction_counts: dict[Path, int] = {}
     osv_cache: dict[tuple[str, str, str], OsvApiClassification] = {}
     osv_query_count = 0
@@ -3606,13 +4196,14 @@ def classify_ioc_hits(
         return osv_cache[key]
 
     for hit in hits:
-        ecosystem = _LOCKFILE_POLICY_ECOSYSTEMS.get(hit.lockfile.name)
+        kind = hit.lockfile_kind or _lockfile_kind(hit.lockfile)
+        ecosystem = _LOCKFILE_POLICY_ECOSYSTEMS.get(kind or "")
         evidence = hit.version_evidence.get(ecosystem or "", ())
         if not evidence:
             classified.append(hit)
             continue
 
-        aggregate_key = (hit.lockfile, hit.ioc, ecosystem or "")
+        aggregate_key = (hit.lockfile, kind or "", hit.ioc, ecosystem or "")
         if aggregate_key in processed_version_aware:
             continue
         processed_version_aware.add(aggregate_key)
@@ -3626,7 +4217,7 @@ def classify_ioc_hits(
             continue
 
         version_info = _extract_lockfile_version_info(
-            hit.lockfile, hit.ioc, hit.lockfile_text
+            hit.lockfile, hit.ioc, hit.lockfile_text, kind
         )
         if version_info.mixed_or_untrusted:
             classified.append(hit)
@@ -3684,6 +4275,14 @@ def classify_ioc_hits(
     return classified
 
 
+def _display_path(repo: Path, path: Path) -> str:
+    """Root-relative, display-safe path; never raises for a path outside `repo`."""
+    try:
+        return _display_safe(str(path.relative_to(repo)))
+    except ValueError:
+        return _display_safe(str(path))
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("repo", type=Path, help="path to the cloned repo to scan")
@@ -3722,7 +4321,10 @@ def main() -> int:
     try:
         lockfiles, symlinked, traversal_errors = discover_lockfiles(repo)
         remote_sources: dict[str, dict[Path, set[str]]] = {}
-        name_hits, unreadable = ioc_grep(lockfiles, iocs, remote_sources)
+        includes: list[RequirementsInclude] = []
+        name_hits, unreadable = ioc_grep(
+            lockfiles, iocs, remote_sources, root=repo, includes=includes
+        )
         hits = classify_ioc_hits(name_hits, use_osv=not args.offline)
     except Exception as exc:
         print(
@@ -3748,9 +4350,7 @@ def main() -> int:
         )
         for label, by_lockfile in ranked[:_REMOTE_SOURCE_DISPLAY_LIMIT]:
             count = sum(len(urls) for urls in by_lockfile.values())
-            files = sorted(
-                _display_safe(str(lf.relative_to(repo))) for lf in by_lockfile
-            )
+            files = sorted(_display_path(repo, lf) for lf in by_lockfile)
             shown = ", ".join(files[:3]) + (
                 f", +{len(files) - 3} more" if len(files) > 3 else ""
             )
@@ -3760,6 +4360,24 @@ def main() -> int:
                 f"  … and {len(ranked) - _REMOTE_SOURCE_DISPLAY_LIMIT} more host(s)",
                 file=sys.stderr,
             )
+
+    noted = [record for record in includes if record.outcome == "note"]
+    if noted:
+        print(
+            "ioc_scan: NOTE (non-gating) — requirements includes pip cannot "
+            "install from:",
+            file=sys.stderr,
+        )
+        for record in noted[:_REMOTE_SOURCE_DISPLAY_LIMIT]:
+            print(
+                f"  {_display_path(repo, record.source)}:{record.line_no}  "
+                f"{record.target}  ({record.reason})",
+                file=sys.stderr,
+            )
+
+    scanned_count = len(lockfiles) + sum(
+        record.outcome == "followed" for record in includes
+    )
 
     # A definitive HIT is the most informative outcome — report it first (still a
     # HALT). Both exit 2 (hit) and exit 3 (couldn't fully scan) stop prep.
@@ -3772,7 +4390,11 @@ def main() -> int:
               file=sys.stderr)
         print("=" * 72, file=sys.stderr)
         for hit in hits:
-            rel = hit.lockfile.relative_to(repo)
+            rel = _display_path(repo, hit.lockfile)
+            if hit.lockfile_kind and hit.lockfile_kind != _lockfile_kind(
+                hit.lockfile, repo
+            ):
+                rel += " (read as pip requirements)"
             if hit.whole_file_kind == "curated-version-pair":
                 version = hit.versions[0]
                 print(
@@ -3822,15 +4444,29 @@ def main() -> int:
             "failing closed:",
             file=sys.stderr,
         )
+        refused = [record for record in includes if record.outcome == "refused"]
+        refused_sources = {record.source for record in refused}
         for lf in unscanned:
-            kind = "symlink" if lf in symlinked else "unreadable"
-            print(f"  {kind}: {lf.relative_to(repo)}", file=sys.stderr)
+            if lf in symlinked:
+                kind = "symlink"
+            elif lf in refused_sources:
+                kind = "incomplete-includes"
+            else:
+                kind = "unreadable"
+            print(f"  {kind}: {_display_path(repo, lf)}", file=sys.stderr)
+        for record in refused[:_REMOTE_SOURCE_DISPLAY_LIMIT]:
+            print(
+                f"  include: {_display_path(repo, record.source)}:{record.line_no}  "
+                f"{record.target}  ({record.reason})",
+                file=sys.stderr,
+            )
+        if len(refused) > _REMOTE_SOURCE_DISPLAY_LIMIT:
+            print(
+                f"  … and {len(refused) - _REMOTE_SOURCE_DISPLAY_LIMIT} more include(s)",
+                file=sys.stderr,
+            )
         for path in traversal_errors:
-            try:
-                display = path.relative_to(repo)
-            except ValueError:
-                display = path
-            print(f"  traversal-error: {display}", file=sys.stderr)
+            print(f"  traversal-error: {_display_path(repo, path)}", file=sys.stderr)
         return 3
 
     if stale_days is None or stale_days < 0:
@@ -3840,17 +4476,17 @@ def main() -> int:
         # (exit 1); never silently certify fresh-clean off an invalid header.
         reason = ("no valid LAST_REFRESHED header" if stale_days is None
                   else "a future-dated LAST_REFRESHED header")
-        print(f"ioc_scan: clean ({len(lockfiles)} lockfile(s) scanned), but the IoC "
+        print(f"ioc_scan: clean ({scanned_count} lockfile(s) scanned), but the IoC "
               f"list {args.ioc_list} has {reason} — freshness could not be "
               f"established; refresh/repair it", file=sys.stderr)
         return 1
     if stale_days > _STALE_DAYS:
-        print(f"ioc_scan: clean ({len(lockfiles)} lockfile(s) scanned), but the "
+        print(f"ioc_scan: clean ({scanned_count} lockfile(s) scanned), but the "
               f"IoC list is {stale_days} days stale (>{_STALE_DAYS}d) — refresh it",
               file=sys.stderr)
         return 1
 
-    print(f"ioc_scan: clean — no malicious dependencies in {len(lockfiles)} "
+    print(f"ioc_scan: clean — no malicious dependencies in {scanned_count} "
           f"lockfile(s) under {repo}")
     return 0
 

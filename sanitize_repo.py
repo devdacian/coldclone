@@ -927,10 +927,12 @@ _REQUIREMENTS_NAME_RE = re.compile(   # bounded quantifiers (ReDoS invariant)
     r"(?:requirements[\w.-]{0,128}|[\w.-]{1,128}-requirements|constraints[\w.-]{0,128})\.txt")
 
 
-def _is_requirements_file(dp: Path, nm: str) -> bool:
+def _is_requirements_file(dp: Path, nm: str, repo: Path | None = None) -> bool:
     if _REQUIREMENTS_NAME_RE.fullmatch(nm):
         return True
-    if nm.endswith(".txt") and dp.name == "requirements":   # requirements/*.txt
+    # requirements/*.txt — a `requirements` dir inside the repo, not a clone
+    # that happens to be named `requirements` (ioc_scan.py mirrors this).
+    if nm.endswith(".txt") and dp.name == "requirements" and dp != repo:
         return True
     return False
 _STD_PY_BACKENDS = {"setuptools.build_meta", "setuptools.build_meta:__legacy__",
@@ -1875,7 +1877,7 @@ def scan_content_warn(repo: Path) -> list[str]:
         for nm in filenames:
             # exact-name set first (cheap); only non-named files pay the
             # requirements-predicate regex (short-circuit).
-            if nm not in CONTENT_WARN_NAMES and not _is_requirements_file(dp, nm):
+            if nm not in CONTENT_WARN_NAMES and not _is_requirements_file(dp, nm, repo):
                 continue
             p = dp / nm
             if p.is_symlink():
@@ -1918,7 +1920,7 @@ def scan_content_warn(repo: Path) -> list[str]:
                     out += _warn_go_mod(rel, p.read_text(encoding="utf-8", errors="replace"))
                 elif nm == "composer.json":
                     out += _warn_composer_json(rel, json.loads(p.read_text(encoding="utf-8")))
-                elif _is_requirements_file(dp, nm):
+                elif _is_requirements_file(dp, nm, repo):
                     out += _warn_requirements(rel, p.read_text(encoding="utf-8", errors="replace"))
             except Exception as e:  # fail-open: a parse error never breaks sanitize
                 out.append(f"WARN could not parse {rel} ({type(e).__name__}); review manually")

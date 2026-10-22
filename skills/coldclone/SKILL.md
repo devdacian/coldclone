@@ -110,7 +110,10 @@ in-tree sentinel as the authority.
 The dependency scan may also print a non-gating `NOTE` listing hosts outside the
 default npm registries that lockfiles fetch packages from (git hosts, private
 registries, plain `http`). It does not change the exit code; relay it to the
-user, since a forged lockfile can point any package at such a host.
+user, since a forged lockfile can point any package at such a host. It also
+follows pip `-r` / `-c` includes; an include it cannot inspect (a URL, a path
+outside the tree, a missing target, `${VAR}`) fails the scan closed, and the
+output names the include — relay it rather than retrying.
 
 Direct `sanitize_repo.py` users may acknowledge injection with
 `COLDCLONE_ACK_INJECTION=1`, but the `coldclone.sh` wrapper intentionally

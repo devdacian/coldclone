@@ -1838,6 +1838,17 @@ def test_requirements_name_predicate_scanned(tmp_path, name, sub):
     assert "editable VCS/URL install" in run(repo).stdout
 
 
+def test_repo_named_requirements_does_not_scan_its_root_txt(tmp_path):
+    """A clone named `requirements` is not the requirements/ split directory."""
+    repo = tmp_path / "requirements"
+    (repo / ".git").mkdir(parents=True)
+    (repo / "notes.txt").write_text("-e git+https://h/x\n")
+    assert "editable" not in run(repo).stdout
+    (repo / "requirements").mkdir()
+    (repo / "requirements" / "base.txt").write_text("-e git+https://h/x\n")
+    assert "editable VCS/URL install" in run(repo).stdout
+
+
 def test_notes_txt_not_scanned(tmp_path):
     """A random .txt is NOT a requirements file → not scanned (predicate precision)."""
     repo = mkrepo(tmp_path)

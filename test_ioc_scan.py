@@ -29,7 +29,7 @@ def _scan_hits(
     lockfiles, symlinked, traversal_errors = ioc_scan.discover_lockfiles(repo)
     assert not symlinked
     assert not traversal_errors
-    hits, unreadable = ioc_scan.ioc_grep(lockfiles, iocs)
+    hits, unreadable = ioc_scan.ioc_grep(lockfiles, iocs, root=repo)
     assert not unreadable
     return ioc_scan.classify_ioc_hits(hits, use_osv=use_osv)
 
@@ -491,7 +491,7 @@ def test_package_lock_duplicate_json_key_falls_back(tmp_path: Path) -> None:
     )
     iocs, _ = ioc_scan.load_ioc_list(policy)
     lockfiles, _, _ = ioc_scan.discover_lockfiles(repo)
-    name_hits, unreadable = ioc_scan.ioc_grep(lockfiles, iocs)
+    name_hits, unreadable = ioc_scan.ioc_grep(lockfiles, iocs, root=repo)
     assert unreadable == [repo / "package-lock.json"]
     assert ioc_scan.classify_ioc_hits(name_hits)[0].verification == "name-only"
 
@@ -512,7 +512,7 @@ def test_huge_json_integer_falls_back_to_name_hit_and_wrapper_refuses(
     )
     iocs, _ = ioc_scan.load_ioc_list(policy)
     lockfiles, _, _ = ioc_scan.discover_lockfiles(repo)
-    name_hits, unreadable = ioc_scan.ioc_grep(lockfiles, iocs)
+    name_hits, unreadable = ioc_scan.ioc_grep(lockfiles, iocs, root=repo)
     assert unreadable == [repo / "package-lock.json"]
     hits = ioc_scan.classify_ioc_hits(name_hits)
     assert len(hits) == 1
@@ -931,6 +931,43 @@ def test_escaped_yarn_identity_fails_closed_instead_of_clearing(
         tmp_path / "ioc.txt", "keyv", "VERSION: npm | keyv | 6.0.0"
     )
     assert _run_main(monkeypatch, repo, policy, "--offline") == 3
+
+
+@pytest.mark.parametrize(("locked", "expected"), [("1.7.7", []), ("1.14.1", ["1.14.1"])])
+def test_pnpm_overrides_and_peer_suffixed_importer_versions_verify(
+    tmp_path: Path, locked: str, expected: list[str]
+) -> None:
+    """Common pnpm shapes: an `overrides:` selector and `1.7.7(debug@4.3.7)`."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "pnpm-lock.yaml").write_text(
+        "lockfileVersion: '9.0'\n"
+        "overrides:\n"
+        "  axios@>=0.19.0 <0.34.0: 0.34.0\n"
+        "  '@coinbase/cdp-sdk@1.54.0>axios': 1.20.0\n"
+        "importers:\n"
+        "  .:\n"
+        "    dependencies:\n"
+        "      axios:\n"
+        f"        specifier: {locked}\n"
+        f"        version: {locked}(debug@4.3.7)\n"
+        "packages:\n"
+        f"  axios@{locked}:\n"
+        "    resolution: {integrity: sha512-test}\n"
+        "snapshots:\n"
+        f"  axios@{locked}(debug@4.3.7):\n"
+        "    dependencies:\n"
+        "      debug: 4.3.7\n",
+        encoding="utf-8",
+    )
+    policy = _policy(
+        tmp_path / "ioc.txt",
+        "VERSION: npm | axios | 1.14.1",
+        "VERSION: npm | axios | 0.30.4",
+    )
+    hits = _scan_hits(repo, policy)
+    assert [hit.versions[0] for hit in hits] == expected
+    assert all(hit.verification == "ioc-list-version-match" for hit in hits)
 
 
 def test_pnpm_trusted_intersection_and_workspace_fallback(tmp_path: Path) -> None:
@@ -1683,7 +1720,7 @@ def test_version_classification_reuses_budgeted_lockfile_text(
         tmp_path / "ioc.txt", "keyv", "VERSION: npm | keyv | 6.0.0"
     )
     iocs, _stale = ioc_scan.load_ioc_list(policy)
-    name_hits, unreadable = ioc_scan.ioc_grep([lockfile], iocs)
+    name_hits, unreadable = ioc_scan.ioc_grep([lockfile], iocs, root=repo)
     assert not unreadable
 
     monkeypatch.setattr(
@@ -3249,7 +3286,7 @@ def test_yarn_escapes_in_quoted_scalars_fail_closed(tmp_path: Path, lock: str) -
     repo = _write_repo(tmp_path, "yarn.lock", lock)
     iocs, _ = ioc_scan.load_ioc_list(_keyv_policy(tmp_path))
     lockfiles, _, _ = ioc_scan.discover_lockfiles(repo)
-    _, unreadable = ioc_scan.ioc_grep(lockfiles, iocs)
+    _, unreadable = ioc_scan.ioc_grep(lockfiles, iocs, root=repo)
     assert unreadable == lockfiles
 
 
@@ -3262,7 +3299,7 @@ def test_pnpm_escaped_line_break_fails_closed(tmp_path: Path) -> None:
     ))
     iocs, _ = ioc_scan.load_ioc_list(_keyv_policy(tmp_path))
     lockfiles, _, _ = ioc_scan.discover_lockfiles(repo)
-    _, unreadable = ioc_scan.ioc_grep(lockfiles, iocs)
+    _, unreadable = ioc_scan.ioc_grep(lockfiles, iocs, root=repo)
     assert unreadable == lockfiles
 
 
@@ -3320,7 +3357,7 @@ def test_pnpm_yaml_aliases_fail_closed(tmp_path: Path, lock: str) -> None:
     repo = _write_repo(tmp_path, "pnpm-lock.yaml", lock)
     iocs, _ = ioc_scan.load_ioc_list(_keyv_policy(tmp_path))
     lockfiles, _, _ = ioc_scan.discover_lockfiles(repo)
-    hits, unreadable = ioc_scan.ioc_grep(lockfiles, iocs)
+    hits, unreadable = ioc_scan.ioc_grep(lockfiles, iocs, root=repo)
     assert unreadable == lockfiles
     assert [hit.ioc for hit in hits] == ["keyv"]  # still surfaced first
 
@@ -3370,7 +3407,7 @@ def test_pnpm_multiline_quoted_scalars_fail_closed(tmp_path: Path, tail: str) ->
     ))
     iocs, _ = ioc_scan.load_ioc_list(_keyv_policy(tmp_path))
     lockfiles, _, _ = ioc_scan.discover_lockfiles(repo)
-    _, unreadable = ioc_scan.ioc_grep(lockfiles, iocs)
+    _, unreadable = ioc_scan.ioc_grep(lockfiles, iocs, root=repo)
     assert unreadable == lockfiles
 
 
@@ -3430,7 +3467,7 @@ def test_bun_lockb_advisory_inspects_shared_url_once(tmp_path: Path) -> None:
     lockfiles, _, _ = ioc_scan.discover_lockfiles(repo)
     sources: dict = {}
     started = time.monotonic()
-    ioc_scan.ioc_grep(lockfiles, iocs, sources)
+    ioc_scan.ioc_grep(lockfiles, iocs, sources, root=repo)
     assert time.monotonic() - started < 5
     assert list(sources) == ["e.example"]
 
@@ -3443,7 +3480,7 @@ def test_pnpm_yaml_node_properties_fail_closed(tmp_path: Path, prop: str) -> Non
     ))
     iocs, _ = ioc_scan.load_ioc_list(_keyv_policy(tmp_path))
     lockfiles, _, _ = ioc_scan.discover_lockfiles(repo)
-    _, unreadable = ioc_scan.ioc_grep(lockfiles, iocs)
+    _, unreadable = ioc_scan.ioc_grep(lockfiles, iocs, root=repo)
     assert unreadable == lockfiles
 
 
@@ -3496,7 +3533,7 @@ def test_pnpm_adjacent_node_properties_fail_closed(
     ))
     iocs, _ = ioc_scan.load_ioc_list(_keyv_policy(tmp_path))
     lockfiles, _, _ = ioc_scan.discover_lockfiles(repo)
-    _, unreadable = ioc_scan.ioc_grep(lockfiles, iocs)
+    _, unreadable = ioc_scan.ioc_grep(lockfiles, iocs, root=repo)
     assert unreadable == lockfiles
 
 
@@ -3554,7 +3591,7 @@ def test_fetch_fields_feed_the_advisory(tmp_path: Path) -> None:
     iocs, _ = ioc_scan.load_ioc_list(_policy(tmp_path / "ioc.txt", "unrelated-ioc-name"))
     lockfiles, _, _ = ioc_scan.discover_lockfiles(repo)
     sources: dict = {}
-    _, unreadable = ioc_scan.ioc_grep(lockfiles, iocs, sources)
+    _, unreadable = ioc_scan.ioc_grep(lockfiles, iocs, sources, root=repo)
     assert unreadable == []
     assert sorted(sources) == [
         "block.example", "codeload.github.com", "github.com",
@@ -3589,7 +3626,7 @@ def test_pnpm_yaml_outside_writer_subset_fails_closed(tmp_path: Path, lock: str)
     repo = _write_repo(tmp_path, "pnpm-lock.yaml", lock)
     iocs, _ = ioc_scan.load_ioc_list(_keyv_policy(tmp_path))
     lockfiles, _, _ = ioc_scan.discover_lockfiles(repo)
-    _, unreadable = ioc_scan.ioc_grep(lockfiles, iocs)
+    _, unreadable = ioc_scan.ioc_grep(lockfiles, iocs, root=repo)
     assert unreadable == lockfiles
 
 
@@ -3605,7 +3642,7 @@ def test_pnpm_prettier_formatted_flow_mappings_are_supported(tmp_path: Path) -> 
     assert _scan_hits(repo, _keyv_policy(tmp_path)) == []
     iocs, _ = ioc_scan.load_ioc_list(_keyv_policy(tmp_path))
     sources: dict = {}
-    ioc_scan.ioc_grep([repo / "pnpm-lock.yaml"], iocs, sources)
+    ioc_scan.ioc_grep([repo / "pnpm-lock.yaml"], iocs, sources, root=repo)
     assert list(sources) == ["npm.corp.example"]
 
 
@@ -3658,7 +3695,7 @@ def test_structural_flow_or_indented_root_fails_closed(
     repo = _write_repo(tmp_path, name, lock)
     iocs, _ = ioc_scan.load_ioc_list(_keyv_policy(tmp_path))
     lockfiles, _, _ = ioc_scan.discover_lockfiles(repo)
-    _, unreadable = ioc_scan.ioc_grep(lockfiles, iocs)
+    _, unreadable = ioc_scan.ioc_grep(lockfiles, iocs, root=repo)
     assert unreadable == lockfiles
 
 
@@ -3833,7 +3870,7 @@ def test_pnpm_comment_brace_and_dedent_inside_flow_fail_closed(tmp_path: Path) -
     ))
     iocs, _ = ioc_scan.load_ioc_list(_keyv_policy(tmp_path))
     lockfiles, _, _ = ioc_scan.discover_lockfiles(repo)
-    _, unreadable = ioc_scan.ioc_grep(lockfiles, iocs)
+    _, unreadable = ioc_scan.ioc_grep(lockfiles, iocs, root=repo)
     assert unreadable == lockfiles
     # A comment brace in a well-indented Prettier flow does not end the join.
     joined = ioc_scan._join_flow_lines([
@@ -3926,7 +3963,7 @@ def test_pnpm_quoted_flow_key_feeds_the_advisory(tmp_path: Path, key: str) -> No
     ))
     iocs, _ = ioc_scan.load_ioc_list(_policy(tmp_path / "ioc.txt", "unrelated-ioc-name"))
     sources: dict = {}
-    ioc_scan.ioc_grep([repo / "pnpm-lock.yaml"], iocs, sources)
+    ioc_scan.ioc_grep([repo / "pnpm-lock.yaml"], iocs, sources, root=repo)
     assert list(sources) == ["evil.example"]
 
 
@@ -4481,3 +4518,694 @@ def test_artifact_discovery_covers_pip_link_filenames() -> None:
         if identity is None:
             continue
         assert ioc_scan._pep503(identity[0]) in ioc_scan._pypi_artifact_names(url), url
+
+
+# --- pip requirements family and -r / -c includes -------------------------
+
+_REQ_POLICY = ("evilpkg", "VERSION: PyPI | litellm | 1.82.7")
+
+
+def _req_repo(tmp_path: Path, files: dict[str, str | bytes]) -> Path:
+    repo = tmp_path / "repo"
+    for name, content in files.items():
+        target = repo / name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if isinstance(content, bytes):
+            target.write_bytes(content)
+        else:
+            target.write_text(content, encoding="utf-8", newline="")
+    repo.mkdir(exist_ok=True)
+    return repo
+
+
+def _req_main(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    files: dict[str, str | bytes],
+    *records: str,
+) -> int:
+    repo = _req_repo(tmp_path, files)
+    policy = _policy(tmp_path / "ioc.txt", *(records or _REQ_POLICY))
+    return _run_main(monkeypatch, repo, policy, "--offline")
+
+
+_FAMILY_CORPUS = [
+    ("", "requirements.txt", True),
+    ("", "requirements-dev.txt", True),
+    ("", "requirements_test.txt", True),
+    ("", "dev-requirements.txt", True),
+    ("", "constraints.txt", True),
+    ("", "constraints-3.12.txt", True),
+    ("requirements", "base.txt", True),
+    ("", "notes.txt", False),
+    ("", "Requirements.txt", False),
+    ("", "requirements.in", False),
+    ("", "requirements.txt.bak", False),
+    ("envs", "dev.txt", False),
+    ("requirements", "base.in", False),
+]
+
+
+def test_requirements_family_predicate_mirrors_sanitizer() -> None:
+    import sanitize_repo
+
+    assert (
+        ioc_scan._REQUIREMENTS_NAME_RE.pattern
+        == sanitize_repo._REQUIREMENTS_NAME_RE.pattern
+    )
+    for parent, name, expected in _FAMILY_CORPUS:
+        assert ioc_scan._is_requirements_name(parent, name) is expected, name
+        assert sanitize_repo._is_requirements_file(
+            Path("/repo") / parent if parent else Path("/repo/sub"), name
+        ) is expected, name
+
+
+@pytest.mark.parametrize(
+    "name", [name if not parent else f"{parent}/{name}"
+             for parent, name, expected in _FAMILY_CORPUS if expected]
+)
+def test_requirements_family_members_are_scanned(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str
+) -> None:
+    assert _req_main(tmp_path, monkeypatch, {name: "evilpkg==1.0\n"}) == 2
+
+
+@pytest.mark.parametrize(
+    "name", ["notes.txt", "Requirements.txt", "requirements.in", "envs/dev.txt"]
+)
+def test_non_family_files_are_not_scanned(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str
+) -> None:
+    assert _req_main(tmp_path, monkeypatch, {name: "evilpkg==1.0\n"}) == 0
+
+
+def test_scan_root_named_requirements_does_not_scan_its_own_txt_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "requirements"
+    (repo / "requirements").mkdir(parents=True)
+    (repo / "LICENSE.txt").write_text("evilpkg\n", encoding="utf-8")
+    policy = _policy(tmp_path / "ioc.txt", *_REQ_POLICY)
+    assert _run_main(monkeypatch, repo, policy, "--offline") == 0
+    (repo / "requirements" / "base.txt").write_text("evilpkg\n", encoding="utf-8")
+    assert _run_main(monkeypatch, repo, policy, "--offline") == 2
+
+
+def test_symlinked_family_member_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = _req_repo(tmp_path, {"real.txt": "requests==2.0\n"})
+    (repo / "requirements-dev.txt").symlink_to(repo / "real.txt")
+    policy = _policy(tmp_path / "ioc.txt", *_REQ_POLICY)
+    assert _run_main(monkeypatch, repo, policy, "--offline") == 3
+
+
+@pytest.mark.parametrize(
+    ("content", "expected"),
+    [("LiteLLM==1.82.7\n", 2), ("litellm==1.0.0\n", 0), ("litellm>=1.0\n", 2)],
+)
+def test_exact_pypi_pins_apply_to_every_family_member(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, content: str, expected: int
+) -> None:
+    files = {"requirements/dev.txt": content}
+    assert _req_main(tmp_path, monkeypatch, files) == expected
+
+
+@pytest.mark.parametrize(
+    "directive",
+    [
+        "-r base.txt",
+        "-c base.txt",
+        "--requirement base.txt",
+        "--requirement=base.txt",
+        "-rbase.txt",
+        "--requirem base.txt",
+        "--cons base.txt",
+        "-r\tbase.txt",
+        "-r \\\n  base.txt",
+        "requests==2.0 -r base.txt",
+        '-"r" base.txt',
+        "-'r' base.txt",
+        "-\\r base.txt",
+        '-i https://pypi.org/simple -"r" base.txt',
+        '-"-"requirement base.txt',
+    ],
+)
+def test_include_spellings_are_followed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, directive: str
+) -> None:
+    files = {"requirements.txt": directive + "\n", "base.txt": "evilpkg\n"}
+    assert _req_main(tmp_path, monkeypatch, files) == 2
+
+
+def test_quoted_include_path_with_space_is_followed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    files = {"requirements.txt": '-r "my reqs.txt"\n', "my reqs.txt": "evilpkg\n"}
+    assert _req_main(tmp_path, monkeypatch, files) == 2
+
+
+def test_include_chain_relative_paths_and_skipped_dirs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    files = {
+        "app/requirements.txt": "-r ../shared/base.cfg\n",
+        "shared/base.cfg": "-c ./pins/c.in\n",
+        "shared/pins/c.in": "-r ../../venv/deep.txt\n",
+        "venv/deep.txt": "evilpkg==1.0\n",
+    }
+    assert _req_main(tmp_path, monkeypatch, files) == 2
+    assert "venv/deep.txt (read as pip requirements)" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("content", "expected"),
+    [("LiteLLM==1.82.7\n", 2), ("litellm==1.0.0\n", 0)],
+)
+def test_included_non_family_file_uses_requirements_semantics(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, content: str, expected: int
+) -> None:
+    files = {"requirements.txt": "-r base.txt\n", "base.txt": content}
+    assert _req_main(tmp_path, monkeypatch, files) == expected
+
+
+def test_included_lockfile_name_is_also_read_as_requirements(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    files = {
+        "requirements.txt": "-r Cargo.lock\n",
+        "Cargo.lock": "litellm==1.82.7\n",
+    }
+    assert _req_main(tmp_path, monkeypatch, files) == 2
+
+
+def test_includes_resolve_per_including_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    files = {
+        "svc-a/requirements.txt": "-r base.txt\n",
+        "svc-a/base.txt": "requests==2.0\n",
+        "svc-b/requirements.txt": "-r base.txt\n",
+        "svc-b/base.txt": "evilpkg\n",
+    }
+    assert _req_main(tmp_path, monkeypatch, files) == 2
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        b"foo\x85-r evil.txt\n",          # latin-1 NEL line break
+        b"foo==1.0 # \x81\\\n-r evil.txt\n",  # GBK swallows the continuation
+        b"\xa1\xa1-r evil.txt\n",            # GBK/cp949 ideographic space
+        b"\x81\x40-r evil.txt\n",            # cp932 ideographic space
+        b"-r\x81\x40evil.txt\n",             # ... between option and target
+        b"# note\x816\xa65-r evil.txt\n",    # GB18030 U+2028 line separator
+    ],
+)
+def test_non_utf8_locale_views_expose_hidden_includes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, content: bytes
+) -> None:
+    files = {"requirements.txt": content, "evil.txt": "evilpkg\n"}
+    assert _req_main(tmp_path, monkeypatch, files) == 2
+
+
+@pytest.mark.parametrize(
+    ("content", "expected"),
+    [
+        (b"# note\x816\xa65-r\xa1\xa1evil.in\n", 3),  # GB18030 U+2028 + U+3000
+        (b"# caf\xe9 -c pins\n", 3),
+        (b"# caf\xe9\ndjango-cors-headers==4.0\n", 3),  # blunt: any `-c` refuses
+        (b"# caf\xe9\nrequests==2.0 --hash=sha256:00\n", 0),
+        (b"# caf\xe9\nrequests==2.0\n--pre\n", 0),
+        (b"#a\\\n-\\\x816\xa65r\xa1\xa1evil.in\n", 3),  # comment ending in `\\`
+        (b"#a\\\n-\\\nr\xa1\xa1evil.in\n", 3),
+        (b"requests==2.0\\\r\x816\xa65-\\\x816\xa65r\xa1\xa1evil.in\n", 3),  # CR+U+2028
+        # valid-UTF-8 NBSP is a separator here but `\u807d` (not space) in GBK
+        (b"# caf\xe9\n-c decoy.txt\xc2\xa0# -r evil.in\n", 3),
+        (b"# caf\xe9 --requirement=x\n", 3),
+        (b"# note\x816\xa65-\\\nr\xa1\xa1evil.in\n", 3),  # continuation splits -r
+        (b"# caf\xe9\n-\\\x816\xa65r evil.in\n", 3),  # ... across a GB18030 U+2028
+        (b"requests==2.0\\\n\n-\\\nr\xa1\xa1evil.in\n", 3),  # one line per `\\`
+        (b"a\\\xe9\x85-\\\nr x\n", 3),
+    ],
+)
+def test_non_utf8_requirements_with_include_text_fail_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, content: bytes, expected: int
+) -> None:
+    files = {"requirements.txt": content, "\u3000evil.in": "evilpkg\n"}
+    assert _req_main(tmp_path, monkeypatch, files) == expected
+
+
+@pytest.mark.parametrize(
+    ("content", "expected"),
+    [
+        # pip < 25.0 decodes valid UTF-8 with a cp932/GBK locale: `丁` swallows
+        # the continuation backslash and `-r base.in` stands alone.
+        ("requests==2.31.0\nfoo\u4e01\\\n-r base.in\n", 2),
+        # Best effort only: ordinary UTF-8 comments never refuse.
+        ("# \u2014 run: pip install -r missing.txt -c also-missing.txt\n"
+         "python-jose==3.3.0  # \u2014 pre-commit\n", 0),
+    ],
+)
+def test_valid_utf8_locale_views_are_best_effort(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, content: str, expected: int
+) -> None:
+    files = {"requirements.txt": content, "base.in": "LiteLLM==1.82.7\n"}
+    assert _req_main(tmp_path, monkeypatch, files) == expected
+
+
+@pytest.mark.parametrize(("nested", "expected"), [("-r gone.txt\n", 0), ("evilpkg\n", 2)])
+def test_speculative_include_keeps_hits_but_not_coverage_gaps(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, nested: str, expected: int
+) -> None:
+    files = {
+        "requirements.txt": "# \u2014 see: pip install -r docs.txt\nrequests==2.0\n",
+        "docs.txt": nested,
+    }
+    assert _req_main(tmp_path, monkeypatch, files) == expected
+
+
+@pytest.mark.parametrize("strict_includer", ["requirements-dev.txt", "z-requirements.txt"])
+def test_target_reached_strictly_and_speculatively_is_strict(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    strict_includer: str,
+) -> None:
+    files = {
+        "requirements.txt": "# \u2014 pip install -r base.txt\n",
+        strict_includer: "-r base.txt\n",  # sorts before / after the comment
+        "base.txt": "-r gone.txt\n",
+    }
+    assert _req_main(tmp_path, monkeypatch, files) == 3
+    files["base.txt"] = "requests\n"
+    assert _req_main(tmp_path / "b", monkeypatch, files) == 0
+    assert "3 lockfile(s)" in capsys.readouterr().out
+
+
+def test_locale_views_reuse_cached_include_resolution(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    files = {"requirements.txt": "# caf\u00e9\n" + "-r base.txt\n" * 50, "base.txt": "x\n"}
+    calls = 0
+    real = ioc_scan._resolve_include
+
+    def counting(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(ioc_scan, "_resolve_include", counting)
+    assert _req_main(tmp_path, monkeypatch, files) == 0
+    assert calls == 1
+
+
+@pytest.mark.parametrize("limit", ["_LOCKFILE_COUNT_LIMIT", "_INCLUDE_TARGET_LIMIT"])
+def test_speculative_targets_cannot_starve_a_genuine_include(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, limit: str
+) -> None:
+    files = {
+        # scanned first (`-` sorts before `.`): comment-only references
+        "requirements-dev.txt": "# \u2014 pip install -r s1.txt -r s2.txt -r s3.txt\n",
+        "requirements.txt": "-r real.txt\n",
+        "real.txt": "evilpkg\n",
+        **{f"s{i}.txt": "requests\n" for i in (1, 2, 3)},
+    }
+    monkeypatch.setattr(ioc_scan, limit, 3)
+    assert _req_main(tmp_path, monkeypatch, files) == 2
+
+
+def test_cached_include_does_not_bypass_spelling_checks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    files = {
+        "requirements.txt": '-r base.in\n-r "x\\foo/../base.in"\n',
+        "base.in": "requests==2.0\n",
+        "x/base.in": "evilpkg\n",
+    }
+    assert _req_main(tmp_path, monkeypatch, files) == 3
+
+
+def test_include_and_pnpm_parsing_stay_linear(tmp_path: Path) -> None:
+    import time
+
+    line = "requests==2.0" + " " * 200_000 + "--hash=sha256:00"
+    started = time.monotonic()
+    assert ioc_scan._line_include_targets(line) == []
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "pnpm-lock.yaml").write_text(
+        "lockfileVersion: '9.0'\n"
+        "importers:\n  .:\n    dependencies:\n      keyv:\n"
+        "        specifier: 6.0.0\n"
+        "        version: 6.0.0" + "(" * 200_000 + "\n"
+        "packages:\n  keyv@6.0.0:\n    resolution: {integrity: sha512-test}\n",
+        encoding="utf-8",
+    )
+    info = ioc_scan._extract_pnpm_lock_version_info(repo / "pnpm-lock.yaml", "keyv")
+    assert info.mixed_or_untrusted
+    assert time.monotonic() - started < 5
+
+
+@pytest.mark.parametrize(
+    "files",
+    [
+        {"requirements.txt": "-r requirements.txt\n"},
+        {"requirements.txt": "-r a.txt\n", "a.txt": "-r requirements.txt\n"},
+    ],
+)
+def test_include_cycles_terminate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, files: dict[str, str]
+) -> None:
+    assert _req_main(tmp_path, monkeypatch, files) == 0
+
+
+def test_discovered_and_included_file_is_scanned_once(tmp_path: Path) -> None:
+    repo = _req_repo(
+        tmp_path,
+        {"requirements.txt": "-r requirements-dev.txt\n",
+         "requirements-dev.txt": "evilpkg\n"},
+    )
+    iocs, _ = ioc_scan.load_ioc_list(_policy(tmp_path / "ioc.txt", *_REQ_POLICY))
+    lockfiles, _, _ = ioc_scan.discover_lockfiles(repo)
+    includes: list[ioc_scan.RequirementsInclude] = []
+    hits, unreadable = ioc_scan.ioc_grep(lockfiles, iocs, root=repo, includes=includes)
+    assert [(hit.lockfile.name, hit.ioc) for hit in hits] == [
+        ("requirements-dev.txt", "evilpkg")
+    ]
+    assert unreadable == []
+    assert [record.outcome for record in includes] == []  # already queued
+
+
+@pytest.mark.parametrize(
+    ("directive", "reason"),
+    [
+        ("-r https://user:tok@host.example/p?q=1", "remote include"),
+        ("-c file:///etc/c.txt", "remote include"),
+        ("-r ${DIR}/x.txt", "environment-dependent include"),
+        ("--${OPT}=hidden.in", "environment-dependent directive"),
+        ("${LINE}", "environment-dependent directive"),
+        ("-r ../outside.txt", "outside the scanned tree"),
+        ("-r /etc/hosts", "outside the scanned tree"),
+        ("-r nope.txt", "include target missing"),
+        ("-r 'deps\\evil.txt'", "spelled for another OS"),
+        ("-r evil.txt.", "spelled for another OS"),
+        ("-r C:evil.txt", "spelled for another OS"),
+        ("-r bad\x00name.txt", "include target missing"),
+    ],
+)
+def test_uninspectable_includes_fail_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    directive: str,
+    reason: str,
+) -> None:
+    files = {"requirements.txt": directive + "\n", "hidden.in": "evilpkg\n"}
+    assert _req_main(tmp_path, monkeypatch, files) == 3
+    err = capsys.readouterr().err
+    assert reason in err
+    assert "tok" not in err and "/p" not in err and "q=1" not in err
+    # A NOTE or refusal never masks a hit elsewhere.
+    (tmp_path / "repo" / "constraints.txt").write_text("evilpkg\n", encoding="utf-8")
+    policy = tmp_path / "ioc.txt"
+    assert _run_main(monkeypatch, tmp_path / "repo", policy, "--offline") == 2
+
+
+def test_env_reference_inside_a_value_is_not_a_refusal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    files = {
+        "requirements.txt": "git+https://${TOKEN}@host.example/x.git\n"
+        "-e ${DIR}/pkg\n"
+        "--find-links ${WHEELHOUSE}\n"
+        "requests==2.0 ${EXTRA}\n"
+    }
+    assert _req_main(tmp_path, monkeypatch, files) == 0
+
+
+@pytest.mark.parametrize("kind", ["symlink-file", "symlink-dir", "fifo"])
+def test_include_through_symlink_or_special_file_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    repo = _req_repo(tmp_path, {"real/base.txt": "requests==2.0\n"})
+    if kind == "symlink-file":
+        (repo / "base.txt").symlink_to(repo / "real" / "base.txt")
+        directive = "-r base.txt"
+    elif kind == "symlink-dir":
+        (repo / "linked").symlink_to(repo / "real")
+        directive = "-r linked/base.txt"
+    else:
+        import os
+
+        os.mkfifo(repo / "fifo.txt")
+        directive = "-r fifo.txt"
+    (repo / "requirements.txt").write_text(directive + "\n", encoding="utf-8")
+    policy = _policy(tmp_path / "ioc.txt", *_REQ_POLICY)
+    assert _run_main(monkeypatch, repo, policy, "--offline") == 3
+
+
+def test_dotdot_include_through_a_symlink_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """pip < 24.3 walks `venv/..` through the `venv` symlink itself."""
+    repo = _req_repo(
+        tmp_path,
+        {"requirements.txt": "-r venv/../clean.txt\n", "clean.txt": "requests\n",
+         "sub/clean.txt": "evilpkg\n", "sub/deep/x": ""},
+    )
+    (repo / "venv").symlink_to(repo / "sub" / "deep")
+    policy = _policy(tmp_path / "ioc.txt", *_REQ_POLICY)
+    assert _run_main(monkeypatch, repo, policy, "--offline") == 3
+    (repo / "venv").unlink()
+    (repo / "venv").mkdir()
+    assert _run_main(monkeypatch, repo, policy, "--offline") == 0
+
+
+@pytest.mark.parametrize(
+    "files",
+    [
+        # The normalized spelling resolved first must not answer for `venv/..`.
+        {"requirements.txt": "-r clean.txt\n-r venv/../clean.txt\n"},
+        {"requirements.txt": "-r venv/../clean.txt\n-r clean.txt\n"},
+        # `requirements-dev.txt` is scanned first and warms the cache.
+        {"requirements-dev.txt": "-r clean.txt\n",
+         "requirements.txt": "-r venv/../clean.txt\n"},
+    ],
+)
+def test_dotdot_include_is_not_answered_by_a_cached_spelling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, files: dict[str, str]
+) -> None:
+    repo = _req_repo(
+        tmp_path,
+        {**files, "clean.txt": "requests\n", "sub/clean.txt": "evilpkg\n",
+         "sub/deep/x": ""},
+    )
+    (repo / "venv").symlink_to(repo / "sub" / "deep")
+    policy = _policy(tmp_path / "ioc.txt", *_REQ_POLICY)
+    assert _run_main(monkeypatch, repo, policy, "--offline") == 3
+    (repo / "venv").unlink()
+    (repo / "venv").mkdir()
+    assert _run_main(monkeypatch, repo, policy, "--offline") == 0
+
+
+def test_oversized_or_foreign_codec_include_target_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(ioc_scan, "_LOCKFILE_SIZE_LIMIT", 64)
+    files = {"requirements.txt": "-r big.txt\n", "big.txt": "x" * 100 + "\n"}
+    assert _req_main(tmp_path, monkeypatch, files) == 3
+    monkeypatch.undo()
+    files = {
+        "requirements.txt": "-r wide.txt\n",
+        "wide.txt": "requests\n".encode("utf-16"),
+    }
+    assert _req_main(tmp_path / "b", monkeypatch, files) == 3
+
+
+def test_include_count_and_target_limits_fail_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    lines = "".join(f"-r r{index}.txt\n" for index in range(5))
+    files = {"requirements.txt": lines}
+    files.update({f"r{index}.txt": "requests\n" for index in range(5)})
+    monkeypatch.setattr(ioc_scan, "_LOCKFILE_COUNT_LIMIT", 3)
+    assert _req_main(tmp_path, monkeypatch, files) == 3
+    monkeypatch.setattr(ioc_scan, "_LOCKFILE_COUNT_LIMIT", 1024)
+    monkeypatch.setattr(ioc_scan, "_INCLUDE_TARGET_LIMIT", 3)
+    assert _req_main(tmp_path / "b", monkeypatch, files) == 3
+    monkeypatch.setattr(ioc_scan, "_INCLUDE_TARGET_LIMIT", 10)
+    assert _req_main(tmp_path / "c", monkeypatch, files) == 0
+
+
+def test_directory_include_is_a_non_gating_note(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    repo = _req_repo(tmp_path, {"requirements.txt": "-r deps\n"})
+    (repo / "deps").mkdir()
+    policy = _policy(tmp_path / "ioc.txt", *_REQ_POLICY)
+    assert _run_main(monkeypatch, repo, policy, "--offline") == 0
+    assert "include target is a directory" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "files",
+    [
+        {"yarn.lock": "# -r evil.txt\n", "evil.txt": "evilpkg\n"},
+        {"requirements.txt": "-C evil.txt\n", "evil.txt": "evilpkg\n"},
+    ],
+)
+def test_include_syntax_outside_pip_includes_is_not_followed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, files: dict[str, str]
+) -> None:
+    assert _req_main(tmp_path, monkeypatch, files) == 0
+
+
+def test_shell_split_matches_shlex() -> None:
+    import random
+    import shlex
+
+    rng = random.Random(1022)
+    alphabet = ["a", "r", "-", " ", "\t", "\n", '"', "'", "\\", "$", "#"]
+    for _ in range(20_000):
+        text = "".join(rng.choice(alphabet) for _ in range(rng.randint(0, 12)))
+        try:
+            expected: object = shlex.split(text)
+        except ValueError:
+            expected = ValueError
+        try:
+            actual: object = ioc_scan._shell_split(text)
+        except ValueError:
+            actual = ValueError
+        assert actual == expected, repr(text)
+
+
+def test_long_include_word_and_oversized_listing_stay_bounded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import time
+
+    started = time.monotonic()
+    assert ioc_scan._line_include_targets("-r " + "a" * 2_000_000) == ["a" * 2_000_000]
+    assert time.monotonic() - started < 5
+    files = {"requirements.txt": "".join(f"-r big/t{i}.in\n" for i in range(50))}
+    files.update({f"big/f{i}": "" for i in range(30)})
+    repo = _req_repo(tmp_path, files)
+    monkeypatch.setattr(ioc_scan, "_DISCOVERY_ENTRY_LIMIT", 20)
+    calls = 0
+    real_scandir = ioc_scan.os.scandir
+
+    def counting_scandir(path: str):
+        nonlocal calls
+        if str(path).endswith("big"):
+            calls += 1
+        return real_scandir(path)
+
+    monkeypatch.setattr(ioc_scan.os, "scandir", counting_scandir)
+    listings = ioc_scan._DirectoryListings()
+    for index in range(50):
+        outcome, reason, _ = ioc_scan._resolve_include(
+            repo, repo / "requirements.txt", f"big/t{index}.in", listings
+        )
+        assert (outcome, reason) == ("refused", "include limit exceeded")
+    assert calls == 1
+
+
+def test_directory_listing_budget_counts_each_entry_once(tmp_path: Path) -> None:
+    files = {f"d{i}/f{j}.txt": "x\n" for i in range(4) for j in range(3)}
+    repo = _req_repo(tmp_path, {**files, "requirements.txt": ""})
+    listings = ioc_scan._DirectoryListings()
+    for _ in range(3):  # repeated resolution reuses cached listings
+        for i in range(4):
+            outcome, _, _ = ioc_scan._resolve_include(
+                repo, repo / "requirements.txt", f"d{i}/f0.txt", listings
+            )
+            assert outcome == "follow"
+    # root (4 dirs + requirements.txt) + 4 x 3 files, each counted once
+    assert listings.examined == 5 + 12
+
+
+def test_line_include_targets_superset() -> None:
+    targets = ioc_scan._line_include_targets
+    assert targets("-r a.txt -r b.txt") == ["a.txt", "b.txt"]
+    assert targets("foo==1.0 -r x.txt") == ["x.txt"]
+    assert targets("--re x.txt") == ["x.txt"]
+    assert targets("--con=y.txt") == ["y.txt"]
+    assert targets("-C x.txt --config-settings=y") == []
+    assert targets("foo-r==1.0") == []
+
+
+def test_classification_keeps_one_path_under_two_kinds(tmp_path: Path) -> None:
+    lockfile = tmp_path / "Cargo.lock"
+    lockfile.write_text("litellm==1.82.7\n", encoding="utf-8")
+    policy = _policy(tmp_path / "ioc.txt", "VERSION: PyPI | litellm | 1.82.7")
+    iocs, _ = ioc_scan.load_ioc_list(policy)
+    entry = iocs["litellm"]
+    hits = [
+        ioc_scan.IocHit(
+            lockfile=lockfile, ioc="litellm", lockfile_line_no=1,
+            ioc_line_no=entry.line_no, version_evidence=entry.version_evidence,
+            lockfile_kind=kind,
+        )
+        for kind in ("requirements.txt", "requirements.txt", "Cargo.lock")
+    ]
+    classified = ioc_scan.classify_ioc_hits(hits)
+    assert [hit.verification for hit in classified] == [
+        "ioc-list-version-match", "name-only"
+    ]
+
+
+def test_case_variant_include_spelling_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    files = {"requirements.txt": "-r EVIL.txt\n", "evil.txt": "requests\n"}
+    assert _req_main(tmp_path, monkeypatch, files) == 3
+    assert "--submodules" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    ("files", "expected"),
+    [
+        # cookiecutter-style split layout
+        ({"requirements/base.txt": "django==5.0\n",
+          "requirements/local.txt": "-r base.txt\npytest==8.0\n"}, 0),
+        # docs requirements reusing the root file
+        ({"requirements.txt": "requests==2.0\n",
+          "docs/requirements.txt": "-r ../requirements.txt\nsphinx\n"}, 0),
+        ({"requirements.txt": "--extra-index-url https://download.pytorch.org/whl/cpu\n"
+          "torch==2.4.0\n"}, 0),
+        ({"requirements.txt": "-e .\n"}, 0),
+        ({"requirements.txt": "--extra-index-url https://${TOKEN}@host.example/simple\n"
+          "private-pkg==1.0\n"}, 0),
+        # remote constraints (Airflow style) and Docker-absolute paths refuse
+        ({"requirements.txt": "-c https://raw.githubusercontent.com/apache/airflow/"
+          "constraints-2.10.0/constraints-3.12.txt\n"}, 3),
+        ({"requirements.txt": "-r /app/requirements/base.txt\n"}, 3),
+    ],
+)
+def test_ordinary_requirements_layouts_have_pinned_exits(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    files: dict[str, str],
+    expected: int,
+) -> None:
+    assert _req_main(tmp_path, monkeypatch, files) == expected
+
+
+def test_multibyte_absorbed_backslash_cannot_merge_an_include(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    files = {
+        "requirements.txt": b"--index-url https://example.org/\x81\\ -r hidden.in\n",
+        "hidden.in": "evilpkg\n",
+    }
+    assert _req_main(tmp_path, monkeypatch, files) == 2
+
+
+def test_include_directory_listing_budget_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    files = {"requirements.txt": "-r node_modules/base.in\n", "node_modules/base.in": "x\n"}
+    files.update({f"node_modules/pkg{index}": "" for index in range(20)})
+    monkeypatch.setattr(ioc_scan, "_DISCOVERY_ENTRY_LIMIT", 10)
+    assert _req_main(tmp_path, monkeypatch, files) == 3

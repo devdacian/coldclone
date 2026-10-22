@@ -15,7 +15,7 @@
 # Legacy provenance finalizers may remain in synchronized source data:
 # AFFECTED_SET_COMPLETE: <ecosystem> | <package-name>
 # VERSION ecosystems are npm, crates.io and PyPI, where the scanner has trusted
-# exact extractors (PyPI: uv.lock, poetry.lock, requirements.txt pins; versions
+# exact extractors (PyPI: uv.lock, poetry.lock, pip requirements-file pins; versions
 # are canonical PEP 440 public versions and names PEP 503-normalized). A VERSION
 # record whose package has NO plain entry is ecosystem-scoped: it matches only
 # that ecosystem's lockfiles, so a compromised PyPI release does not HALT an
