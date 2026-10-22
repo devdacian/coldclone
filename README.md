@@ -17,8 +17,8 @@ virtual machine, container, or sandbox), not a replacement for one.
   files it must leave live so you can read scope.
 - **`ioc_scan.py`** — a known-malicious-dependency tripwire that greps lockfiles
   (npm / PyPI / cargo / Go / …) against a maintained indicator list. It reports
-  trusted exact malicious-version evidence for npm-family (including Bun) and
-  Cargo lockfiles when available, while preserving package-wide hits for all-malicious
+  trusted exact malicious-version evidence for npm-family (including Bun), Cargo,
+  and Python (`uv.lock`, `poetry.lock`, `requirements.txt` pins) lockfiles when available, while preserving package-wide hits for all-malicious
   identities. Read-only; no install or execution. Its optional OSV fallback uses
   the network by default and can be disabled with `--offline`.
 - **`coldclone.sh`** — orchestrates a hardened clone (symlinks off, LFS filters
@@ -27,9 +27,14 @@ virtual machine, container, or sandbox), not a replacement for one.
 
 Plain entries in `ioc-list.txt` are package-wide triggers for identities whose
 entire release family is malicious, such as typosquats. Adding
-`VERSION: <ecosystem> | <package> | <exact-semver>` makes that identity
+`VERSION: <ecosystem> | <package> | <exact-version>` (ecosystem `npm`,
+`crates.io`, or `PyPI`; SemVer for the first two, a canonical PEP 440 public
+version with a PEP 503-normalized name for PyPI) makes that identity
 version-scoped: a trusted exact intersection alerts, while any other trusted
-exact version is treated as safe. Integrity metadata is not part of version
+exact version is outside the known malicious set. A package with VERSION records
+but no plain entry is **ecosystem-scoped**: it matches only that ecosystem's
+lockfiles, so a compromised PyPI `telnyx` release cannot HALT a repo using the
+unrelated npm or PHP `telnyx` SDK. Integrity metadata is not part of version
 identity, and a fetched tarball URL must agree with it (see below). Structurally ambiguous or unsupported evidence still
 halts because the scanner cannot prove which release is locked; a trusted
 extractor finding no installed record clears a textual metadata-only match. Legacy
@@ -52,6 +57,37 @@ with an escape sequence in a quoted value (lockfile writers emit none, and it
 can spell a name or URL a line-based scan cannot see), a quoted value spanning
 lines, or a YAML tag, anchor, alias, or merge key. Unrecognized top-level lines
 keep a version-scoped hit instead of clearing it.
+
+Python exact extraction (`PyPI`) covers three files. PEP 440 equality applies
+(`1.82.7.0` is `1.82.7`; local `+tag` versions are untrusted):
+
+- **`uv.lock`** (lock `version = 1`): a matching row is trusted only with a
+  `registry` source and at least one `sdist`/`wheels` URL, every one of which is a
+  plain URL whose wheel/sdist filename records exactly that name and version.
+  The project root (`editable = "."` / `virtual = "."`) is skipped; any other
+  editable, path, git, or URL source keeps the hit.
+- **`poetry.lock`** (lock-version 2.x): a matching package is trusted only with no
+  source table (PyPI) or a `legacy` index source and a non-empty `files` list
+  whose filenames all record that name and version.
+- **`requirements.txt`**, read like pip (its line splitting, `\` continuation and
+  comment rules): only `name[extras] == V` (optional environment marker and
+  `--hash` options) pins a release. A range, bare name, `===`, wildcard, URL,
+  editable/VCS line, or `${VAR}` naming the package keeps the hit; a bare wheel or
+  sdist URL/path is recognized by its filename (also percent-decoded). Index
+  options (`--extra-index-url`, `-f`, …) do not change which release a pin names.
+  A `requirements.txt` pip would decode as something else (a UTF-16/32
+  byte-order mark, or a first `coding:` cookie naming a non-UTF-8 codec) fails
+  closed; one that is not valid UTF-8 cannot clear a version-scoped name. `-r` /
+  `-c` includes are not followed, and only files literally named
+  `requirements.txt` are scanned.
+
+`Pipfile.lock` has no exact extractor yet, so a version-scoped PyPI name there
+always halts. Both TOML lockfiles are parsed with `tomllib` (Python ≥ 3.11), and
+decoded strings are scanned too, so an escaped name surfaces; malformed TOML fails
+closed. On older Pythons the TOML extractors cannot verify a version (a
+version-scoped name halts), and a TOML lockfile containing an escape that could
+spell a name (`\u`, `\U`, `\x`, or a line-ending backslash) fails closed. The
+non-default-host `NOTE` below is npm-only; Python index hosts are not reported.
 
 The tarball's host is not part of that check, so private registries and
 mirrors keep working. Instead, the scan prints a non-gating `NOTE` listing

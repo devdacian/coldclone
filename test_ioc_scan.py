@@ -147,9 +147,30 @@ def test_malformed_version_policy_fails_closed(
         ioc_scan.load_ioc_list(policy)
 
 
-def test_version_policy_requires_plain_fallback_entry(tmp_path: Path) -> None:
-    policy = _policy(tmp_path / "ioc.txt", "VERSION: npm | keyv | 6.0.0")
-    with pytest.raises(ioc_scan.IocListError, match="no plain package entry"):
+def test_version_only_policy_is_ecosystem_scoped(tmp_path: Path) -> None:
+    policy = _policy(
+        tmp_path / "ioc.txt",
+        "VERSION: npm | keyv | 6.0.0",
+        "VERSION: PyPI | litellm | 1.107.0",
+        "VERSION: crates.io | litellm | 1.0.0",
+        "telnyx",
+        "VERSION: PyPI | telnyx | 4.87.1",
+    )
+    iocs, _ = ioc_scan.load_ioc_list(policy)
+    assert iocs["keyv"].scope == frozenset({"npm"})
+    assert iocs["keyv"].line_no == 2
+    assert iocs["litellm"].scope == frozenset({"PyPI", "crates.io"})
+    # A plain entry of the exact name keeps today's cross-ecosystem matching.
+    assert iocs["telnyx"].scope is None
+
+
+def test_completeness_marker_without_version_still_fails_closed(
+    tmp_path: Path,
+) -> None:
+    policy = _policy(tmp_path / "ioc.txt", "AFFECTED_SET_COMPLETE: npm | keyv")
+    with pytest.raises(
+        ioc_scan.IocListError, match="has no earlier distinct VERSION record"
+    ):
         ioc_scan.load_ioc_list(policy)
 
 
@@ -217,11 +238,16 @@ def test_canonical_policy_has_pinned_version_and_complete_set_shape() -> None:
         ("crates.io", "greentic-setup", "1.3.1-dev.34027618345"),
         ("npm", "@subql/common", "5.8.3"),
         ("npm", "homestack-cheer", "1.0.0"),
+        ("npm", "tensorlake", "0.5.144"),
+        ("PyPI", "litellm", "1.107.0"),
+        ("PyPI", "telnyx", "4.87.1"),
     }
-    assert len(actual) == 2434
+    assert len(actual) == 2440
     assert expected_sentinels <= actual
-    assert len(iocs) == 7444
-    assert sum(bool(entry.version_evidence) for entry in iocs.values()) == 534
+    assert len(iocs) == 7447
+    assert sum(bool(entry.version_evidence) for entry in iocs.values()) == 537
+    assert iocs["litellm"].scope == frozenset({"PyPI"})
+    assert iocs["tensorlake"].scope == frozenset({"npm"})
 
     complete = {
         (ecosystem, package)
@@ -241,11 +267,20 @@ def test_policy_ecosystem_and_extractor_maps_have_bidirectional_parity() -> None
     assert set(ioc_scan._LOCKFILE_VERSION_EXTRACTORS) == set(
         ioc_scan._LOCKFILE_POLICY_ECOSYSTEMS
     )
-    assert ioc_scan._IOC_VERSION_ECOSYSTEMS == frozenset({"npm", "crates.io"})
+    assert ioc_scan._IOC_VERSION_ECOSYSTEMS == frozenset(
+        {"npm", "crates.io", "PyPI"}
+    )
     assert {
         ioc_scan._LOCKFILE_POLICY_ECOSYSTEMS[name]
         for name in ioc_scan._LOCKFILE_VERSION_EXTRACTORS
     } == ioc_scan._IOC_VERSION_ECOSYSTEMS
+    # Scoped entries see every lockfile of their ecosystem, extractor or not.
+    scope = ioc_scan._LOCKFILE_SCOPE_ECOSYSTEMS
+    assert set(ioc_scan._LOCKFILE_POLICY_ECOSYSTEMS.items()) <= set(scope.items())
+    assert {name for name, eco in scope.items() if eco == "PyPI"} == set(
+        ioc_scan._PYPI_LOCKFILES
+    )
+    assert not {"go.sum", "composer.lock", "Gemfile.lock"} & set(scope)
 
 
 def test_trusted_package_lock_intersection_reports_exact_policy_evidence(
@@ -3768,3 +3803,556 @@ def test_pnpm_quoted_flow_key_feeds_the_advisory(tmp_path: Path, key: str) -> No
     sources: dict = {}
     ioc_scan.ioc_grep([repo / "pnpm-lock.yaml"], iocs, sources)
     assert list(sources) == ["evil.example"]
+
+
+# --- PyPI exact-version (VERSION: PyPI) support ------------------------------
+
+_PYPI_POLICY = (
+    "VERSION: PyPI | litellm | 1.82.7",
+    "VERSION: PyPI | litellm | 1.107.0",
+)
+
+
+def _pypi_scan(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+    content: str | bytes,
+    *records: str,
+) -> int:
+    repo = tmp_path / "repo"
+    repo.mkdir(exist_ok=True)
+    target = repo / name
+    if isinstance(content, bytes):
+        target.write_bytes(content)
+    else:
+        target.write_text(content, encoding="utf-8", newline="")
+    policy = _policy(tmp_path / "ioc.txt", *(records or _PYPI_POLICY))
+    return _run_main(monkeypatch, repo, policy, "--offline")
+
+
+@pytest.mark.parametrize(
+    ("version", "canonical"),
+    [
+        ("1.82.7", True), ("1!2.0", True), ("1.0a1", True), ("1.0.post1", True),
+        ("1.0.dev0", True), ("1.0rc1.post2.dev3", True), ("1.82.7.0", True),
+        ("v1.0", False), ("1.0-1", False), ("1.0a", False), ("1.0.post", False),
+        ("0!1.0", False), ("1.0+local", False), ("01.0", False), ("1.0.*", False),
+        ("1.0RC1", False), (">=1.0", False), ("", False),
+    ],
+)
+def test_pypi_policy_versions_must_be_canonical_public_pep440(
+    tmp_path: Path, version: str, canonical: bool
+) -> None:
+    policy = _policy(tmp_path / "ioc.txt", f"VERSION: PyPI | litellm | {version}")
+    if canonical:
+        iocs, _ = ioc_scan.load_ioc_list(policy)
+        assert iocs["litellm"].version_evidence["PyPI"][0][0] == version
+    else:
+        with pytest.raises(ioc_scan.IocListError):
+            ioc_scan.load_ioc_list(policy)
+
+
+@pytest.mark.parametrize("name", ["LiteLLM", "lite_llm", "lite--llm", "-litellm"])
+def test_pypi_policy_names_must_be_pep503_normalized(
+    tmp_path: Path, name: str
+) -> None:
+    policy = _policy(tmp_path / "ioc.txt", f"VERSION: PyPI | {name} | 1.0")
+    with pytest.raises(ioc_scan.IocListError):
+        ioc_scan.load_ioc_list(policy)
+
+
+@pytest.mark.parametrize(
+    "record",
+    [
+        "VERSION: PyPI | litellm | 1.0" + "0" * 200,
+        "VERSION: PyPI | litellm | 1." + "9" * 5000,
+        "VERSION: PyPI | " + "a" * 300 + " | 1.0",
+        "VERSION: PyPI | litellm | 1.0\x00",
+        "VERSION: PyPI | litellm | 1.0prev\u0131ew1",
+        "VERSION: PyPI | litellm | 1.0po\u017ft1",
+        "VERSION: PyPI | litellm | \u0661.0",
+    ],
+)
+def test_hostile_pypi_policy_lines_exit_3_never_1(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, record: str
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    policy = _policy(tmp_path / "ioc.txt", record)
+    assert _run_main(monkeypatch, repo, policy, "--offline") == 3
+
+
+@pytest.mark.parametrize(
+    ("left", "right", "equal"),
+    [
+        ("1.82.7", "1.82.7.0", True), ("1.82.7", "1.82.07", True),
+        ("1.0", "v1.0", True), ("1.0", "0!1.0", True), ("1.0a", "1.0a0", True),
+        ("1.0alpha1", "1.0a1", True), ("1.0c1", "1.0rc1", True),
+        ("1.0pre1", "1.0rc1", True), ("1.0.post", "1.0.post0", True),
+        ("1.0-1", "1.0.post1", True), ("1.0r2", "1.0.post2", True),
+        ("1.0.dev", "1.0.dev0", True), ("1.0.RC1", "1.0rc1", True),
+        ("1.0", "1.0.post0", False), ("1.0", "1.0rc0", False),
+        ("1.0", "1.0.dev0", False), ("1!1.0", "1.0", False),
+        ("1.0a1", "1.0b1", False), ("1.0.post1", "1.0.post1.dev0", False),
+    ],
+)
+def test_pep440_equality_key(left: str, right: str, equal: bool) -> None:
+    assert (ioc_scan._pep440_key(left) == ioc_scan._pep440_key(right)) is equal
+    assert ioc_scan._pep440_key(left) is not None
+
+
+def test_pep440_helpers_match_packaging_when_available() -> None:
+    packaging_version = pytest.importorskip("packaging.version")
+    samples = [
+        "1.82.7", "1.82.7.0", "v1.82.7", "1!1.0", "0!1.0", "1.0a", "1.0a0",
+        "1.0alpha1", "1.0.post", "1.0.post0", "1.0-1", "1.0r", "1.0rev2",
+        "1.0.dev", "1.0dev0", "1.0", "1.0c1", "1.0rc1", "1.0pre1", "1.0preview1",
+        "1.0.PoSt1", "01.082.07", "1.0-a1", "1.0_b2", "1.0.rc3.post4.dev5",
+        "1.2.3a1.post2.dev3", "1.0-dev1", "1.0+local", "1.0.0-rc.1", "1.0.*",
+        "1.0,<2", "== 1.0",
+    ]
+    keyed = []
+    for sample in samples:
+        try:
+            parsed = packaging_version.Version(sample)
+        except packaging_version.InvalidVersion:
+            parsed = None
+        if parsed is None or parsed.local is not None:
+            assert ioc_scan._pep440_key(sample) is None, sample
+            continue
+        assert ioc_scan._pep440_canonical(sample) == str(parsed), sample
+        keyed.append((sample, parsed))
+    for left, left_parsed in keyed:
+        for right, right_parsed in keyed:
+            assert (
+                ioc_scan._pep440_key(left) == ioc_scan._pep440_key(right)
+            ) is (left_parsed == right_parsed), (left, right)
+
+
+@pytest.mark.parametrize(
+    ("content", "expected"),
+    [
+        ("litellm==1.82.6\n", 0),
+        ("litellm==1.82.7\n", 2),
+        ("litellm==1.82.7.0\n", 2),
+        ("LiteLLM==1.107.0\n", 2),
+        ("LITELLM==1.107.0\n", 2),
+        ("litellm == 1.82.6\n", 0),
+        ("litellm[proxy]==1.82.6 ; python_version >= \"3.9\"\n", 0),
+        ("litellm[proxy]==1.82.7 ; python_version >= \"3.9\"\n", 2),
+        ("litellm==1.82.6 \\\n    --hash=sha256:abcd \\\n    --hash=sha256:ef01\n", 0),
+        ("litellm==1.82.6\nlitellm==1.107.0 ; sys_platform == 'win32'\n", 2),
+        ("litellm==1.82.6  # pinned\n", 0),
+        # Ranges, bare names and other non-pins cannot establish a release.
+        ("litellm>=1.40\n", 2),
+        ("litellm\n", 2),
+        ("litellm~=1.82.6\n", 2),
+        ("litellm!=1.82.7\n", 2),
+        ("litellm===1.82.6\n", 2),
+        ("litellm==1.82.*\n", 2),
+        ("litellm==1.82.6,<2\n", 2),
+        ("litellm (==1.82.6)\n", 2),
+        ("litellm==1.82.6+local\n", 2),
+        ("litellm==${LITELLM_VERSION}\n", 2),
+        ("litellm @ https://example.com/litellm-1.82.6.tar.gz\n", 2),
+        ("-e git+https://github.com/BerriAI/litellm#egg=litellm\n", 2),
+        ("litellm==1.82.6 --install-option=--x\n", 2),
+        # File-level options do not change which release an exact pin names.
+        ("--extra-index-url https://download.pytorch.org/whl\nlitellm==1.82.6\n", 0),
+        ("-i https://mirror.example/simple\n--find-links ./w\nlitellm==1.82.6\n", 0),
+        # Discovery sees what pip installs.
+        ("lite\\\nllm==1.82.7\n", 2),
+        ("# harmless \\\nlitellm==1.82.7\n", 2),
+        ("# old\x0blitellm==1.82.7\n", 2),
+        ("# old\x0clitellm==1.82.7\n", 2),
+        ("# old\rlitellm==1.82.7\n", 2),
+        ("# old\x85litellm==1.82.7\n", 2),
+        ("# old litellm==1.82.7\n", 2),
+        ("﻿litellm==1.82.7\n", 2),
+        ("https://mirror.example/p/litellm-1.107.0-py3-none-any.whl\n", 2),
+        ("https://mirror.example/p/litel%6cm-1.107.0-py3-none-any.whl\n", 2),
+        ("./wheels/litellm-1.82.7-py3-none-any.whl\n", 2),
+        ("./dist/litellm-1.82.7.tar.gz\n", 2),
+        ("https://u:p@mirror.example/litellm-1.82.7-py3-none-any.whl\n", 2),
+        ("https://m.example/litellm-1.82.7+cpu-py3-none-any.whl\n", 2),
+        ("https://m.example/litellm-1!1.82.7-py3-none-any.whl\n", 2),
+        ("https://m.example/litellm%2D1.82.7-py3-none-any.whl\n", 2),
+        ("litellm==1.82.6\nhttps://u:p@m.example/litellm-1.82.7-py3-none-any.whl\n", 2),
+        ("litellm==1.0prev\u0131ew1\n", 2),
+        ("https://m.example/path%23part/litel%6cm-1.82.7-py3-none-any.whl\n", 2),
+        ("https://m.example/a%3Fb/litel%6cm-1.82.7-py3-none-any.whl\n", 2),
+        ("litellm==1.82.6\nhttps://u:p@m.example/x%23y/litel%6cm-1.82.7-py3-none-any.whl\n", 2),
+        ("https://m.example/litellm-1.82.6-py3-none-any.whl#sha256=00\n", 2),
+        ("https://m.example/litellm-1.82.7-py3-none-any.wh\tl\n", 2),
+        ("https://m.example/litellm-1.82.7-py3-none-any.whl/\n", 2),
+        ("https://m.example/litellm-1.82.7-py3-none-any.whl%2F\n", 2),
+        ("https://m.example/a/litellm-1.82.7-py3-none-any.whl%2F%2F\n", 2),
+        ("litellm==1.82.6\nhttps://m.example/litellm-1.82.7-py3-none-any.whl/\n", 2),
+        ("https://m.example/a%2Flitellm-1.82.7-py3-none-any.whl\n", 2),
+        ("litellm==1.82.6\nhttps://h.example/litellm-1.82.7.tar.bz2\n", 2),
+        ("./dist/litellm-1.82.7.tgz\n", 2),
+        ("# litellm is pulled in by our proxy\nrequests==2.0\n", 0),
+    ],
+)
+def test_requirements_txt_exact_pins(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, content: str, expected: int
+) -> None:
+    assert _pypi_scan(tmp_path, monkeypatch, "requirements.txt", content) == expected
+
+
+def test_requirements_logical_lines_match_pip_preprocess() -> None:
+    req_file = pytest.importorskip("pip._internal.req.req_file")
+    texts = [
+        "a==1 \\\nb==2\n", "# c \\\nd==1\n", "e==1 \\\n# note\nf==2\n",
+        "g==1\\\\\nh==2\n", "\\\\i==1\n", "j==1 # trailing\n  \n", "k\x0bl==1\n",
+        "m \\\n", "n==1\r\no==2\x85p==3\n",
+    ]
+    for text in texts:
+        ours = ioc_scan._pip_logical_lines(text)
+        theirs = [
+            (line_no, line)
+            for line_no, line in req_file.ignore_comments(
+                req_file.join_lines(enumerate(text.splitlines(), start=1))
+            )
+        ]
+        assert ours == theirs, text
+
+
+_UV_ROW = (
+    '[[package]]\nname = "{name}"\nversion = "{version}"\n'
+    'source = {{ registry = "{registry}" }}\n'
+    'sdist = {{ url = "https://files.pythonhosted.org/packages/aa/{sdist}", '
+    'hash = "sha256:00" }}\n'
+    'wheels = [\n    {{ url = "https://files.pythonhosted.org/packages/bb/{wheel}", '
+    'hash = "sha256:00" }},\n]\n'
+)
+
+
+def _uv_lock(*rows: str, version: str = "1") -> str:
+    return f"version = {version}\nrevision = 3\n\n" + "\n".join(rows)
+
+
+def _uv_row(
+    version: str,
+    *,
+    name: str = "litellm",
+    registry: str = "https://pypi.org/simple",
+    sdist: str | None = None,
+    wheel: str | None = None,
+) -> str:
+    return _UV_ROW.format(
+        name=name,
+        version=version,
+        registry=registry,
+        sdist=sdist or f"litellm-{version}.tar.gz",
+        wheel=wheel or f"litellm-{version}-py3-none-any.whl",
+    )
+
+
+@pytest.mark.parametrize(
+    ("content", "expected"),
+    [
+        (_uv_lock(_uv_row("1.82.6")), 0),
+        (_uv_lock(_uv_row("1.82.7")), 2),
+        (_uv_lock(_uv_row("1.107.0", name="LiteLLM")), 2),
+        (_uv_lock(_uv_row("1.82.6"), _uv_row("1.107.0")), 2),
+        # A safe version whose artifact is really the denied release.
+        (_uv_lock(_uv_row("1.82.6", wheel="litellm-1.82.7-py3-none-any.whl")), 2),
+        (_uv_lock(_uv_row("1.82.6", sdist="other-1.82.6.tar.gz")), 2),
+        # Exact identity on another index is still that release (npm precedent).
+        (_uv_lock(_uv_row("1.82.6", registry="https://mirror.example/simple")), 0),
+        (_uv_lock(_uv_row("1.82.6")).replace("files.pythonhosted.org", "u:p@x"), 2),
+        (_uv_lock(_uv_row("1.82.6"), version="2"), 2),
+        (_uv_lock('[[package]]\nname = "litellm"\nversion = "1.107.0"\n'
+                  'source = { editable = "." }\n'), 0),
+        (_uv_lock('[[package]]\nname = "litellm"\nversion = "1.107.0"\n'
+                  'source = { virtual = "." }\n'), 0),
+        (_uv_lock('[[package]]\nname = "litellm"\nversion = "1.82.6"\n'
+                  'source = { editable = "vendor/litellm" }\n'), 2),
+        (_uv_lock('[[package]]\nname = "litellm"\nversion = "1.82.6"\n'
+                  'source = { git = "https://github.com/BerriAI/litellm" }\n'), 2),
+        (_uv_lock('[[package]]\nname = "litellm"\nversion = "1.82.6"\n'
+                  'source = { registry = "https://pypi.org/simple" }\n'), 2),
+        # Escaped identities are decoded before discovery.
+        (_uv_lock('[[package]]\nname = "lite\\u006clm"\nversion = "1.82.7"\n'
+                  'source = { git = "https://x" }\n'), 2),
+        # Another identity whose artifact or source is really the package.
+        (_uv_lock(_uv_row("1.82.6"), _uv_row(
+            "1.0.0", name="shim", sdist="shim-1.0.0.tar.gz",
+            wheel="litellm-1.82.7-py3-none-any.whl",
+        )), 2),
+        (_uv_lock('[[package]]\nname = "shim"\nversion = "1.0.0"\n'
+                  'source = { git = "https://github.com/BerriAI/litellm" }\n'), 2),
+        (_uv_lock(_uv_row(
+            "1.0.0", name="shim", sdist="shim-1.0.0.tar.gz",
+            wheel="x%23y/litel%6cm-1.82.7-py3-none-any.whl",
+        )), 2),
+        (_uv_lock(_uv_row("1.82.6")) + '\n[[package]]\nname = "app"\n'
+         'version = "0.1.0"\nsource = { virtual = "." }\n'
+         'dependencies = [{ name = "litellm" }]\n', 0),
+    ],
+)
+def test_uv_lock_exact_versions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, content: str, expected: int
+) -> None:
+    assert _pypi_scan(tmp_path, monkeypatch, "uv.lock", content) == expected
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        'version = 1\nversion = 1\n[[package]]\nname = "litellm"\n',
+        'version = 1\n[[package]\nname = "litellm"\n',
+        "version = 1\nx = " + "[" * 5000 + "]" * 5000 + "\n",
+    ],
+)
+def test_malformed_uv_lock_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, content: str
+) -> None:
+    assert _pypi_scan(tmp_path, monkeypatch, "uv.lock", content) in (2, 3)
+    if "litellm" not in content:
+        assert _pypi_scan(tmp_path, monkeypatch, "uv.lock", content) == 3
+
+
+@pytest.mark.parametrize(
+    ("content", "expected"),
+    [
+        (_uv_lock(_uv_row("1.82.6")), 2),  # cannot verify -> fail-safe hit
+        ('version = 1\n[[package]]\nname = "lite\\u006clm"\n', 3),
+        ('version = 1\n[[package]]\nname = "lite\\x6Clm"\n', 3),
+        ('version = 1\n[[package]]\nname = """lite\\\n   llm"""\n', 3),
+        ('version = 1\n[[package]]\nname = """lite\\   \nllm"""\n', 3),
+        ('version = 1\n[[package]]\nname = "requests"\n'
+         'markers = "platform_system == \\"Windows\\""\n', 0),
+    ],
+)
+def test_toml_lockfiles_without_tomllib(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    content: str,
+    expected: int,
+) -> None:
+    monkeypatch.setattr(ioc_scan, "tomllib", None)
+    assert _pypi_scan(tmp_path, monkeypatch, "uv.lock", content) == expected
+
+
+def _poetry_lock(*rows: str, lock_version: str = "2.1") -> str:
+    return "\n".join(rows) + f'\n[metadata]\nlock-version = "{lock_version}"\n'
+
+
+def _poetry_row(version: str, *, extra: str = "", files: str | None = None) -> str:
+    if files is None:
+        files = (
+            f'[{{file = "litellm-{version}-py3-none-any.whl", hash = "sha256:00"}}, '
+            f'{{file = "litellm-{version}.tar.gz", hash = "sha256:00"}}]'
+        )
+    return (
+        f'[[package]]\nname = "litellm"\nversion = "{version}"\n'
+        f'optional = false\nfiles = {files}\n{extra}'
+    )
+
+
+@pytest.mark.parametrize(
+    ("content", "expected"),
+    [
+        (_poetry_lock(_poetry_row("1.82.6")), 0),
+        (_poetry_lock(_poetry_row("1.82.7")), 2),
+        (_poetry_lock(_poetry_row(
+            "1.82.6",
+            extra='\n[package.source]\ntype = "legacy"\nurl = "https://m.example/simple"\n'
+            'reference = "mirror"\n',
+        )), 0),
+        (_poetry_lock(_poetry_row(
+            "1.82.6", extra='\n[package.source]\ntype = "directory"\nurl = "vendor/litellm"\n'
+        )), 2),
+        (_poetry_lock(_poetry_row(
+            "1.82.6", extra='\n[package.source]\ntype = "git"\nurl = "https://x"\n'
+        )), 2),
+        (_poetry_lock(_poetry_row("1.82.6", files="[]")), 2),
+        (_poetry_lock(_poetry_row(
+            "1.82.6", files='[{file = "litellm-1.82.7-py3-none-any.whl", hash = "x"}]'
+        )), 2),
+        (_poetry_lock(_poetry_row("1.82.6"), lock_version="1.1"), 2),
+        (_poetry_lock(_poetry_row("1.82.6"), '[[package]]\nname = "shim"\n'
+                      'version = "1.0.0"\noptional = false\nfiles = [{file = '
+                      '"litellm-1.82.7-py3-none-any.whl", hash = "sha256:00"}]\n'), 2),
+    ],
+)
+def test_poetry_lock_exact_versions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, content: str, expected: int
+) -> None:
+    assert _pypi_scan(tmp_path, monkeypatch, "poetry.lock", content) == expected
+
+
+@pytest.mark.parametrize(
+    ("name", "content", "expected"),
+    [
+        # A VERSION-only PyPI entry never matches other ecosystems' namesakes.
+        ("package-lock.json", json.dumps({"lockfileVersion": 3, "packages": {
+            "node_modules/litellm": {
+                "version": "1.82.7",
+                "resolved": "https://registry.npmjs.org/litellm/-/litellm-1.82.7.tgz",
+            }}}), 0),
+        ("composer.lock", '{"packages":[{"name":"litellm/litellm","version":"1.82.7"}]}', 0),
+        ("Gemfile.lock", "GEM\n  specs:\n    litellm (1.82.7)\n", 0),
+        ("go.sum", "github.com/x/litellm v1.82.7 h1:abc=\n", 0),
+        # Pipfile.lock is PyPI but has no exact extractor yet: fail-safe hit.
+        ("Pipfile.lock", '{"_meta":{},"default":{"litellm":{"version":"==1.82.6"}}}', 2),
+    ],
+)
+def test_pypi_scoped_entries_only_match_python_lockfiles(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+    content: str,
+    expected: int,
+) -> None:
+    assert _pypi_scan(tmp_path, monkeypatch, name, content) == expected
+
+
+def test_plain_entry_keeps_cross_ecosystem_matching_with_pypi_versions(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    records = ("telnyx", "VERSION: PyPI | telnyx | 4.87.1")
+    assert _pypi_scan(
+        tmp_path, monkeypatch, "requirements.txt", "telnyx==4.87.0\n", *records
+    ) == 0
+    assert _pypi_scan(
+        tmp_path, monkeypatch, "requirements.txt", "telnyx==4.87.1\n", *records
+    ) == 2
+    (tmp_path / "repo" / "requirements.txt").unlink()
+    assert _pypi_scan(
+        tmp_path, monkeypatch, "composer.lock",
+        '{"packages":[{"name":"telnyx/telnyx-php","version":"2.0.0"}]}', *records,
+    ) == 2
+
+
+@pytest.mark.parametrize("order", [("plain", "scoped"), ("scoped", "plain")])
+def test_pep503_equivalent_entries_are_each_classified(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, order: tuple[str, str]
+) -> None:
+    records = {"plain": "LiteLLM", "scoped": "VERSION: PyPI | litellm | 1.82.7"}
+    # The scoped entry clears 1.82.6, but the package-wide equivalent still hits.
+    assert _pypi_scan(
+        tmp_path, monkeypatch, "requirements.txt", "litellm==1.82.6\n",
+        *(records[key] for key in order),
+    ) == 2
+
+
+def test_pypi_osv_query_uses_pypi_ecosystem_and_canonical_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "requirements.txt").write_text("LiteLLM==1.82.06.0\n", encoding="utf-8")
+    policy = _policy(tmp_path / "ioc.txt", *_PYPI_POLICY)
+    payloads: list[dict[str, object]] = []
+
+    class _Response:
+        def __enter__(self) -> "_Response":
+            return self
+
+        def __exit__(self, *exc: object) -> None:
+            return None
+
+        def read(self, _limit: int) -> bytes:
+            return b'{"vulns": []}'
+
+    def fake_urlopen(request, timeout):  # noqa: ANN001
+        payloads.append(json.loads(request.data))
+        return _Response()
+
+    monkeypatch.setattr(ioc_scan.urllib.request, "urlopen", fake_urlopen)
+    assert _run_main(monkeypatch, repo, policy) == 0
+    assert payloads == [{
+        "package": {"name": "litellm", "ecosystem": "PyPI"},
+        "version": "1.82.6.0",
+    }]
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "\ufefflitellm==1.82.7\n".encode("utf-16-le"),
+        "\ufefflitellm==1.82.7\n".encode("utf-16-be"),
+        "\ufefflitellm==1.82.7\n".encode("utf-32"),
+        b"# -*- coding: utf-7 -*-\nlite+AGw-lm==1.82.7\n",
+        b"requests==2.0\n# vim: set fileencoding=latin-1 :\n",
+    ],
+)
+def test_requirements_codecs_pip_honours_fail_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, content: bytes
+) -> None:
+    assert _pypi_scan(tmp_path, monkeypatch, "requirements.txt", content) == 3
+
+
+def test_requirements_invalid_utf8_cannot_clear_a_versioned_hit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    content = b"requests==2.0\n# old\x85litellm==1.82.7\n"
+    assert _pypi_scan(tmp_path, monkeypatch, "requirements.txt", content) == 2
+    assert _pypi_scan(
+        tmp_path, monkeypatch, "requirements.txt", b"# caf\xe9\nlitellm==1.82.6\n"
+    ) == 2
+    assert _pypi_scan(
+        tmp_path, monkeypatch, "requirements.txt", b"# caf\xe9\nrequests==2.0\n"
+    ) == 0
+
+
+def test_requirements_first_coding_cookie_wins(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    content = b"# coding: utf-8\n# coding: latin-1\nlitellm==1.82.6\n"
+    assert _pypi_scan(tmp_path, monkeypatch, "requirements.txt", content) == 0
+
+
+def test_requirements_utf8_coding_cookie_still_scans(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    content = b"# -*- coding: utf-8 -*-\nlitellm==1.82.6\n"
+    assert _pypi_scan(tmp_path, monkeypatch, "requirements.txt", content) == 0
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "requests==2.0" + " " * 200_000 + "x\n",
+        "litellm" + " " * 200_000 + "x\n",
+        "litellm[" + " " * 200_000 + "x\n",
+        "# " + "\t " * 100_000 + "\n",
+    ],
+)
+def test_requirements_parsing_is_linear_on_whitespace_runs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, content: str
+) -> None:
+    import time
+
+    started = time.monotonic()
+    _pypi_scan(tmp_path, monkeypatch, "requirements.txt", content)
+    assert time.monotonic() - started < 5
+
+
+def test_artifact_discovery_covers_pip_link_filenames() -> None:
+    link_module = pytest.importorskip("pip._internal.models.link")
+    urls = [
+        "https://m.example/litellm-1.82.7-py3-none-any.whl",
+        "https://m.example/litellm-1.82.7-py3-none-any.whl/",
+        "https://m.example/litellm-1.82.7-py3-none-any.whl%2F",
+        "https://m.example/litellm-1.82.7-py3-none-any.whl#sha256=00",
+        "https://m.example/litellm-1.82.7-py3-none-any.whl?x=1",
+        "https://u:p@m.example/litellm-1.82.7-py3-none-any.whl",
+        "https://m.example/x%23y/litel%6cm-1.82.7-py3-none-any.whl",
+        "https://m.example/a%3Fb/litel%6cm-1.82.7.tar.gz",
+        "https://m.example/a%2Flitellm-1.82.7.zip",
+        "https://m.example/litel%256cm-1.82.7-py3-none-any.whl",
+        "https://m.example/litellm-1!1.82.7+cpu-py3-none-any.whl",
+        "https://m.example/litellm-1.82.7-py3-none-any.wh\tl",
+        "file:///wheels/litellm-1.82.7-py3-none-any.whl",
+    ]
+    for url in urls:
+        filename = link_module.Link(url).filename
+        identity = ioc_scan._pypi_artifact_identity(filename)
+        if identity is None:
+            continue
+        assert ioc_scan._pep503(identity[0]) in ioc_scan._pypi_artifact_names(url), url

@@ -14,10 +14,14 @@
 # safe. OSV exact-version queries opportunistically supplement this static set.
 # Legacy provenance finalizers may remain in synchronized source data:
 # AFFECTED_SET_COMPLETE: <ecosystem> | <package-name>
-# VERSION ecosystems are limited to npm and crates.io, where the scanner has
-# trusted exact extractors. Finalizers are validated but do not affect matching;
-# VERSION records themselves are the exact denylist. Malformed structured
-# records make the policy invalid and fail the scan closed.
+# VERSION ecosystems are npm, crates.io and PyPI, where the scanner has trusted
+# exact extractors (PyPI: uv.lock, poetry.lock, requirements.txt pins; versions
+# are canonical PEP 440 public versions and names PEP 503-normalized). A VERSION
+# record whose package has NO plain entry is ecosystem-scoped: it matches only
+# that ecosystem's lockfiles, so a compromised PyPI release does not HALT an
+# unrelated npm/composer namesake. Finalizers are validated but do not affect
+# matching; VERSION records themselves are the exact denylist. Malformed
+# structured records make the policy invalid and fail the scan closed.
 # Example (commented and therefore inert):
 # VERSION: npm | keyv | 6.0.0
 # Lines starting with `#` are comments and preserve source attribution. Empty
@@ -9562,9 +9566,9 @@ knot-simple-formatter
 # Epic Games and other dependency-confusion probes (OSV-only MAL-2025-492xx included),
 # and the mp3/album SEO-spam flood. Excluded as cross-ecosystem collisions with live
 # packages elsewhere: api-anthropic, centralogger, mod-manager, monitoring-agent,
-# passwordcracker, vectorizers; and tensorlake (compromised npm 0.5.144 only, but the
-# name is the vendor's live PyPI/crates.io package and a plain entry would HALT every
-# Python/Rust lockfile using it).
+# passwordcracker, vectorizers. tensorlake (compromised npm 0.5.144 only; the same
+# name is the vendor's live PyPI/crates.io package) is a scoped VERSION: npm record in
+# the LiteLLM/Telnyx block at the end of this file.
 1n9lip
 3gr2dj
 3gr841
@@ -10161,8 +10165,8 @@ zxhgssiyluwxchn
 # semver typosquats, rubika proxy lookalikes, workalendar typosquats, research probes.
 # Package-wide (no PyPI exact-version extractor); none has legitimate prior history.
 # Excluded as cross-ecosystem collisions: anthropic-sdk, audiokit, debbug, deebug,
-# getpubip, libseal, voicekit. Also excluded: litellm (OSV/DataDog now add 1.107.0 to the
-# 2026-03 1.82.7/1.82.8 compromise; a package-wide entry would HALT every litellm user).
+# getpubip, libseal, voicekit. litellm is not package-wide here: its compromised
+# releases are exact VERSION: PyPI records in the LiteLLM/Telnyx block below.
 acoustichub
 acousticpack
 agent-vx
@@ -10374,3 +10378,22 @@ kartykgithub-susp-pkg-1
 storymesh-win32-x64
 sushiro-cli-win32-x64
 t3-hermes-win32-arm64
+
+# source: https://osv.dev/vulnerability/MAL-2026-2144 ; https://osv.dev/vulnerability/MAL-2026-2254 — queried 2026-10-22
+# also: https://socket.dev/blog/litellm-compromise ; https://www.ox.security/blog/litellm-1-107-0-compromised-with-a-rat-infostealer/ — 2026-10-21
+# also: https://securitylabs.datadoghq.com/articles/litellm-compromised-pypi-teampcp-supply-chain-campaign/ — 2026-03
+# Compromised legitimate PyPI packages; exact malicious releases only. litellm 1.107.0
+# (2026-10-21, .pth/sitecustomize loader + stealer) and 1.82.7 / 1.82.8 plus telnyx
+# 4.87.1 / 4.87.2 (2026-03 TeamPCP). VERSION-only on purpose (ecosystem-scoped): the
+# npm/RubyGems/crates `litellm` and the official npm/PHP `telnyx` SDKs are unrelated.
+VERSION: PyPI | litellm | 1.82.7
+VERSION: PyPI | litellm | 1.82.8
+VERSION: PyPI | litellm | 1.107.0
+VERSION: PyPI | telnyx | 4.87.1
+VERSION: PyPI | telnyx | 4.87.2
+
+# source: https://socket.dev/blog/tensorlake-compromise ; https://safedep.io/tensorlake-npm-compromise-mini-shai-hulud ; https://osv.dev/vulnerability/MAL-2026-17650 — 2026-10-08
+# ChainDrop / Mini Shai-Hulud: tensorlake 0.5.144 published by the project's release
+# workflow after attacker commits (0.5.143 and 0.5.145 clean). VERSION-only, so npm-scoped:
+# the vendor's PyPI/crates.io `tensorlake` packages are not matched.
+VERSION: npm | tensorlake | 0.5.144

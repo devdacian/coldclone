@@ -24,7 +24,9 @@ This is an identity-and-version-exact denylist (high precision via exact
 matching; it catches only KNOWN drops, and its few residual false positives fail
 SAFE — see the accepted limitation below). Trusted exact-version evidence is
 extracted locally from npm-family (package-lock, Yarn, pnpm, Bun text and
-binary) and Cargo lockfiles. By default the scanner
+binary), Cargo, and Python (uv.lock, poetry.lock, requirements.txt pins; PEP 440
+equality) lockfiles. A VERSION-only package (no plain entry) is ecosystem-scoped
+and matches only that ecosystem's lockfiles. By default the scanner
 also makes opportunistic exact-version OSV API queries for version-scoped
 packages; `--offline` disables those queries. It complements — never replaces —
 the auto-execution sanitizer
@@ -58,6 +60,7 @@ Bundled with the open-source coldclone tool; self-contained (no external deps).
 from __future__ import annotations
 
 import argparse
+import codecs
 import io
 import itertools
 import posixpath
@@ -73,6 +76,11 @@ from dataclasses import dataclass, field, replace
 from datetime import date
 from pathlib import Path
 from typing import Callable, Mapping
+
+try:  # tomllib is stdlib >= 3.11; below that TOML lockfiles fall back (see ioc_grep)
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - exercised via monkeypatch
+    tomllib = None
 
 # Default: the bundled list shipped next to this script.
 _DEFAULT_IOC_LIST = Path(__file__).resolve().parent / "ioc-list.txt"
@@ -109,7 +117,23 @@ _LOCKFILE_POLICY_ECOSYSTEMS = {
     "bun.lock": "npm",
     "bun.lockb": "npm",
     "Cargo.lock": "crates.io",
+    "uv.lock": "PyPI",
+    "poetry.lock": "PyPI",
+    "requirements.txt": "PyPI",
 }
+
+# Which ecosystem a lockfile belongs to for ecosystem-scoped (VERSION-only)
+# entries. A superset of the extractor-backed map: a PyPI lockfile with no exact
+# extractor (Pipfile.lock) still matches scoped PyPI entries, which then fail
+# safe as package-wide hits there.
+_LOCKFILE_SCOPE_ECOSYSTEMS = {
+    **{name: "PyPI" for name in _PYPI_LOCKFILES},
+    **_LOCKFILE_POLICY_ECOSYSTEMS,
+}
+assert set(_LOCKFILE_POLICY_ECOSYSTEMS.items()) <= set(
+    _LOCKFILE_SCOPE_ECOSYSTEMS.items()
+)
+_TOML_LOCKFILES = frozenset({"uv.lock", "poetry.lock"})
 
 
 def _pep503(name: str) -> str:
@@ -227,6 +251,9 @@ class IocEntry:
         default_factory=dict
     )
     affected_set_complete: dict[str, int] = field(default_factory=dict)
+    # None: a plain entry, matched in every lockfile. Otherwise a VERSION-only
+    # entry, matched only in lockfiles of these ecosystems.
+    scope: frozenset[str] | None = None
 
 
 @dataclass
@@ -303,7 +330,7 @@ def load_ioc_list(path: Path) -> tuple[dict[str, IocEntry], int | None]:
                     "has no trusted exact extractor"
                 )
             if (
-                not _is_policy_package_identity(package)
+                not _is_policy_package_identity(package, ecosystem)
                 or not _is_exact_registry_version(version, ecosystem)
             ):
                 raise IocListError(
@@ -332,7 +359,7 @@ def load_ioc_list(path: Path) -> tuple[dict[str, IocEntry], int | None]:
                     f"line {line_no}: AFFECTED_SET_COMPLETE ecosystem "
                     f"{ecosystem!r} has no trusted exact extractor"
                 )
-            if not _is_policy_package_identity(package):
+            if not _is_policy_package_identity(package, ecosystem):
                 raise IocListError(
                     f"line {line_no}: invalid AFFECTED_SET_COMPLETE package"
                 )
@@ -357,12 +384,21 @@ def load_ioc_list(path: Path) -> tuple[dict[str, IocEntry], int | None]:
 
     by_package: dict[str, dict[str, dict[str, int]]] = {}
     active_complete: dict[tuple[str, str], int] = {}
+    # A package with VERSION records but no plain entry of the exact same name is
+    # ecosystem-scoped: it only matches lockfiles of the ecosystems it names, so a
+    # compromised PyPI release cannot HALT an unrelated npm/composer namesake.
+    scoped: dict[str, set[str]] = {}
     for line_no, kind, ecosystem, package, version in policy_records:
         if package not in iocs:
-            raise IocListError(
-                f"line {line_no}: {kind.upper()} record for {package!r} has "
-                "no plain package entry"
-            )
+            if kind != "version":
+                raise IocListError(
+                    f"line {line_no}: AFFECTED_SET_COMPLETE for {package!r} "
+                    "has no earlier distinct VERSION record"
+                )
+            iocs[package] = IocEntry(name=package, line_no=line_no)
+            scoped[package] = set()
+        if package in scoped:
+            scoped[package].add(ecosystem)
         versions = by_package.setdefault(package, {}).setdefault(ecosystem, {})
         key = (package, ecosystem)
         if kind == "version":
@@ -384,6 +420,8 @@ def load_ioc_list(path: Path) -> tuple[dict[str, IocEntry], int | None]:
         }
     for (package, ecosystem), line_no in active_complete.items():
         iocs[package].affected_set_complete[ecosystem] = line_no
+    for package, ecosystems in scoped.items():
+        iocs[package].scope = frozenset(ecosystems)
 
     stale_days: int | None = None
     if last_refreshed:
@@ -527,12 +565,18 @@ def _candidates(token: str):
 def _is_exact_registry_version(
     version: str, ecosystem: str | None = None
 ) -> bool:
-    """Return true only for a canonical exact SemVer registry release.
+    """Return true only for a canonical exact registry release.
 
     npm and crates.io both use SemVer release identities. Requiring the full
     three-part form prevents a malformed policy typo from silently turning an
-    identity into a version-scoped allow-by-default rule.
+    identity into a version-scoped allow-by-default rule. PyPI releases are
+    PEP 440 public versions in their canonical normalized spelling.
     """
+    if ecosystem == "PyPI":
+        return (
+            _pep440_key(version) is not None
+            and _pep440_canonical(version) == version
+        )
     if ecosystem not in (None, "npm", "crates.io"):
         return False
     if not version or len(version) > 128:
@@ -540,11 +584,113 @@ def _is_exact_registry_version(
     return _EXACT_SEMVER_RE.fullmatch(version) is not None
 
 
-def _is_policy_package_identity(package: str) -> bool:
-    """Validate npm/crates.io identity shapes accepted by VERSION records."""
+def _is_policy_package_identity(
+    package: str, ecosystem: str | None = None
+) -> bool:
+    """Validate identity shapes accepted by VERSION records.
+
+    PyPI names must already be PEP 503-normalized, so one policy spelling
+    covers every equivalent lockfile spelling.
+    """
+    if ecosystem == "PyPI":
+        return (
+            len(package) <= 128
+            and re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?", package)
+            is not None
+            and _pep503(package) == package
+        )
     return re.fullmatch(
         r"(?:@[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+|[A-Za-z0-9_.-]+)", package
     ) is not None
+
+
+# PEP 440 public/local version grammar (the spec's appendix pattern), without
+# the surrounding whitespace the spec tolerates: an oddly spaced lockfile
+# version is untrusted evidence, never silently accepted.
+_PEP440_RE = re.compile(
+    r"""
+    v?
+    (?:(?P<epoch>[0-9]+)!)?
+    (?P<release>[0-9]+(?:\.[0-9]+)*)
+    (?P<pre>
+        [-_.]?(?P<pre_l>alpha|a|beta|b|preview|pre|c|rc)[-_.]?(?P<pre_n>[0-9]+)?
+    )?
+    (?P<post>
+        -(?P<post_n1>[0-9]+)
+        |[-_.]?(?P<post_l>post|rev|r)[-_.]?(?P<post_n2>[0-9]+)?
+    )?
+    (?P<dev>[-_.]?dev[-_.]?(?P<dev_n>[0-9]+)?)?
+    (?:\+(?P<local>[a-z0-9]+(?:[-_.][a-z0-9]+)*))?
+    """,
+    re.VERBOSE | re.IGNORECASE | re.ASCII,
+)
+_PEP440_PRE_ALIASES = {
+    "alpha": "a", "a": "a", "beta": "b", "b": "b",
+    "c": "rc", "pre": "rc", "preview": "rc", "rc": "rc",
+}
+
+
+def _pep440_parts(
+    version: object,
+) -> tuple[int, tuple[int, ...], tuple[str, int] | None, int | None, int | None] | None:
+    """Parse a PEP 440 *public* version; None if invalid or local (`+tag`)."""
+    if (
+        not isinstance(version, str)
+        or not version
+        or len(version) > 128
+        or not version.isascii()
+    ):
+        return None
+    match = _PEP440_RE.fullmatch(version)
+    if match is None or match.group("local") is not None:
+        return None
+    epoch = int(match.group("epoch") or 0)
+    release = tuple(int(part) for part in match.group("release").split("."))
+    pre = None
+    if match.group("pre") is not None:
+        label = _PEP440_PRE_ALIASES.get(match.group("pre_l").lower())
+        if label is None:
+            return None
+        pre = (label, int(match.group("pre_n") or 0))
+    post = None
+    if match.group("post") is not None:
+        post = int(match.group("post_n1") or match.group("post_n2") or 0)
+    dev = None
+    if match.group("dev") is not None:
+        dev = int(match.group("dev_n") or 0)
+    return epoch, release, pre, post, dev
+
+
+def _pep440_key(version: object) -> tuple[object, ...] | None:
+    """Equality key for a public PEP 440 version (`1.82.7` == `1.82.7.0`).
+
+    Equality only: trailing zero release components are insignificant, while
+    an absent post/pre/dev segment differs from one numbered 0.
+    """
+    parts = _pep440_parts(version)
+    if parts is None:
+        return None
+    epoch, release, pre, post, dev = parts
+    while len(release) > 1 and release[-1] == 0:
+        release = release[:-1]
+    return epoch, release, pre, post, dev
+
+
+def _pep440_canonical(version: object) -> str | None:
+    """The PEP 440 normalized spelling (as `packaging` prints it), or None."""
+    parts = _pep440_parts(version)
+    if parts is None:
+        return None
+    epoch, release, pre, post, dev = parts
+    text = f"{epoch}!" if epoch else ""
+    text += ".".join(str(part) for part in release)
+    if pre is not None:
+        text += f"{pre[0]}{pre[1]}"
+    if post is not None:
+        text += f".post{post}"
+    if dev is not None:
+        text += f".dev{dev}"
+    return text
 
 
 def _is_plain_policy_identity(package: str) -> bool:
@@ -2298,6 +2444,415 @@ def _extract_bun_lockb_version_info(
     )
 
 
+# pip's archive extensions (a `.tar` prefix also covers .tar.gz/.tar.bz2/...).
+_SDIST_SUFFIXES = (".tar.gz", ".tgz", ".tar.bz2", ".tbz", ".tar.xz", ".txz",
+                   ".tlz", ".tar.lz", ".tar.lzma", ".tar", ".zip")
+
+
+def _pypi_artifact_identity(filename: str) -> tuple[str, str] | None:
+    """(name, version) recorded in a wheel or sdist filename, else None.
+
+    Wheels are `{name}-{ver}(-{build})?-{py}-{abi}-{plat}.whl`; sdists are
+    `{name}-{ver}` plus an archive suffix, split at the last `-` of the stem.
+    """
+    if not filename or "/" in filename or "\\" in filename:
+        return None
+    lowered = filename.lower()
+    if lowered.endswith(".whl"):
+        parts = filename[:-4].split("-")
+        if len(parts) not in (5, 6) or not all(parts):
+            return None
+        return parts[0], parts[1]
+    for suffix in _SDIST_SUFFIXES:
+        if lowered.endswith(suffix):
+            name, sep, version = filename[: -len(suffix)].rpartition("-")
+            if not sep or not name or not version:
+                return None
+            return name, version
+    return None
+
+
+def _pypi_artifact_matches(filename: str, package: str, version: str) -> bool:
+    """True when an artifact filename records exactly package@version."""
+    identity = _pypi_artifact_identity(filename)
+    if identity is None:
+        return False
+    key = _pep440_key(identity[1])
+    return (
+        _pep503(identity[0]) == _pep503(package)
+        and key is not None
+        and key == _pep440_key(version)
+    )
+
+
+def _pypi_url_basename(url: object) -> str | None:
+    """Final path segment of a plain artifact URL, else None.
+
+    The same plain-URL rules as `_tarball_url_matches`: no query, fragment,
+    percent-encoding, backslash, whitespace/control, credentials, or dot
+    segments, so the filename checked is the one an installer fetches.
+    """
+    if not isinstance(url, str):
+        return None
+    if "?" in url or "#" in url or "%" in url or "\\" in url:
+        return None
+    if any(char <= " " or char == "\x7f" for char in url):
+        return None
+    try:
+        parts = urllib.parse.urlsplit(url)
+    except ValueError:
+        return None
+    if (
+        parts.scheme not in ("http", "https")
+        or not parts.netloc
+        or "@" in parts.netloc
+    ):
+        return None
+    segments = parts.path.split("/")
+    if any(segment in (".", "..") for segment in segments):
+        return None
+    return segments[-1] or None
+
+
+_TOML_PARSE_CACHE: dict[int, tuple[str, object]] = {}
+
+
+def _parse_toml(text: str) -> object | None:
+    """Parse a TOML lockfile once per text; None when malformed or unavailable.
+
+    Extraction can run several times per lockfile, so the parsed document is
+    cached by the identity of the bounded text `ioc_grep` already read.
+    """
+    if tomllib is None:
+        return None
+    cached = _TOML_PARSE_CACHE.get(id(text))
+    if cached is not None and cached[0] is text:
+        return cached[1]
+    try:
+        data: object = tomllib.loads(text)
+    except (ValueError, RecursionError):
+        data = None
+    if len(_TOML_PARSE_CACHE) >= 8:
+        _TOML_PARSE_CACHE.clear()
+    _TOML_PARSE_CACHE[id(text)] = (text, data)
+    return data
+
+
+def _read_lockfile_text(lockfile: Path, text: str | None, *, strict: bool) -> str | None:
+    if text is not None:
+        return text
+    try:
+        return lockfile.read_text(
+            encoding="utf-8", errors="strict" if strict else "replace"
+        )
+    except (OSError, UnicodeError):
+        return None
+
+
+def _toml_fetch_identities(*values: object) -> set[str]:
+    """Identities named by a TOML row's fetch fields (source, artifacts).
+
+    A row of another name whose source or artifact names the package is a
+    renamed install, not unrelated metadata (dependency lists are not walked).
+    """
+    names: set[str] = set()
+    stack = list(values)
+    while stack:
+        value = stack.pop()
+        if isinstance(value, dict):
+            stack.extend(value.values())
+        elif isinstance(value, list):
+            stack.extend(value)
+        elif isinstance(value, str):
+            names |= _pypi_line_identities(value)
+    return names
+
+
+def _extract_uv_lock_version_info(
+    lockfile: Path, package: str, text: str | None = None
+) -> LockfilePackageVersions:
+    text = _read_lockfile_text(lockfile, text, strict=True)
+    data = _parse_toml(text) if text is not None else None
+    if (
+        not isinstance(data, dict)
+        or type(data.get("version")) is not int
+        or data.get("version") != 1
+        or not isinstance(data.get("package", []), list)
+    ):
+        return LockfilePackageVersions(mixed_or_untrusted=True)
+    target = _pep503(package)
+    versions: set[str] = set()
+    untrusted = False
+    for row in data.get("package", []):
+        if not isinstance(row, dict) or not isinstance(row.get("name"), str):
+            untrusted = True
+            continue
+        if _pep503(row["name"]) != target:
+            if target in _toml_fetch_identities(
+                row.get("source"), row.get("sdist"), row.get("wheels")
+            ):
+                untrusted = True  # another identity fetching the package
+            continue
+        source = row.get("source")
+        if source in ({"editable": "."}, {"virtual": "."}):
+            continue  # the project root itself, not a fetched release
+        version = row.get("version")
+        if _pep440_key(version) is None:
+            untrusted = True
+            continue
+        versions.add(version)
+        artifacts: list[object] = []
+        if "sdist" in row:
+            artifacts.append(row["sdist"])
+        wheels = row.get("wheels", [])
+        if isinstance(wheels, list):
+            artifacts.extend(wheels)
+        else:
+            untrusted = True
+        if (
+            not isinstance(source, dict)
+            or list(source) != ["registry"]
+            or not isinstance(source["registry"], str)
+            or not artifacts
+        ):
+            untrusted = True
+            continue
+        for artifact in artifacts:
+            basename = (
+                _pypi_url_basename(artifact.get("url"))
+                if isinstance(artifact, dict)
+                else None
+            )
+            if basename is None or not _pypi_artifact_matches(
+                basename, package, version
+            ):
+                untrusted = True
+    return LockfilePackageVersions(
+        versions=tuple(sorted(versions)), mixed_or_untrusted=untrusted
+    )
+
+
+def _extract_poetry_lock_version_info(
+    lockfile: Path, package: str, text: str | None = None
+) -> LockfilePackageVersions:
+    text = _read_lockfile_text(lockfile, text, strict=True)
+    data = _parse_toml(text) if text is not None else None
+    metadata = data.get("metadata") if isinstance(data, dict) else None
+    lock_version = (
+        metadata.get("lock-version") if isinstance(metadata, dict) else None
+    )
+    if (
+        not isinstance(lock_version, str)
+        or re.fullmatch(r"2\.[0-9]+", lock_version) is None
+        or not isinstance(data.get("package", []), list)
+    ):
+        # Poetry 1.x lockfiles keep files in a global table; not supported.
+        return LockfilePackageVersions(mixed_or_untrusted=True)
+    target = _pep503(package)
+    versions: set[str] = set()
+    untrusted = False
+    for row in data.get("package", []):
+        if not isinstance(row, dict) or not isinstance(row.get("name"), str):
+            untrusted = True
+            continue
+        if _pep503(row["name"]) != target:
+            if target in _toml_fetch_identities(row.get("source"), row.get("files")):
+                untrusted = True  # another identity fetching the package
+            continue
+        version = row.get("version")
+        if _pep440_key(version) is None:
+            untrusted = True
+            continue
+        versions.add(version)
+        source = row.get("source")
+        files = row.get("files")
+        if (
+            (source is not None and not (
+                isinstance(source, dict) and source.get("type") == "legacy"
+            ))
+            or not isinstance(files, list)
+            or not files
+        ):
+            # Poetry records a source table for every non-PyPI package:
+            # directory/git/file/url dependencies cannot vouch for a release.
+            untrusted = True
+            continue
+        for entry in files:
+            name = entry.get("file") if isinstance(entry, dict) else None
+            if not isinstance(name, str) or not _pypi_artifact_matches(
+                name, package, version
+            ):
+                untrusted = True
+                continue
+            if "url" in entry and _pypi_url_basename(entry["url"]) != name:
+                untrusted = True
+    return LockfilePackageVersions(
+        versions=tuple(sorted(versions)), mixed_or_untrusted=untrusted
+    )
+
+
+_REQUIREMENT_PIN_RE = re.compile(
+    r"(?P<name>[A-Za-z0-9](?:[A-Za-z0-9._-]*[A-Za-z0-9])?)\s*"
+    r"(?:\[[A-Za-z0-9._,\s-]*\]\s*)?"
+    r"==\s*(?P<version>[^\s;]+)(?P<rest>.*)",
+    re.DOTALL,
+)
+_REQUIREMENT_HASH_RE = re.compile(r"--hash=[A-Za-z0-9]+:[0-9A-Fa-f]+")
+
+
+def _strip_pip_comment(line: str) -> str:
+    """Linear equivalent of pip's `COMMENT_RE.sub("", line).strip()`.
+
+    pip's `(^|\\s+)#.*$` cuts at the first `#` that starts the line or follows
+    whitespace; the regex itself backtracks quadratically on whitespace runs.
+    """
+    start = 0
+    while (index := line.find("#", start)) != -1:
+        if index == 0 or line[index - 1].isspace():
+            return line[:index].strip()
+        start = index + 1
+    return line.strip()
+
+
+_REQUIREMENTS_CACHE: dict[int, tuple[str, list[tuple[int, str, frozenset[str]]]]] = {}
+
+
+def _requirements_index(text: str) -> list[tuple[int, str, frozenset[str]]]:
+    """Logical lines with the PEP 503 identities each could install, per text."""
+    cached = _REQUIREMENTS_CACHE.get(id(text))
+    if cached is not None and cached[0] is text:
+        return cached[1]
+    index = [
+        (line_no, line, frozenset(_pypi_line_identities(line)))
+        for line_no, line in _pip_logical_lines(text)
+    ]
+    if len(_REQUIREMENTS_CACHE) >= 8:
+        _REQUIREMENTS_CACHE.clear()
+    _REQUIREMENTS_CACHE[id(text)] = (text, index)
+    return index
+
+
+def _pip_logical_lines(text: str) -> list[tuple[int, str]]:
+    """requirements.txt logical lines exactly as pip's `preprocess` builds them.
+
+    `str.splitlines()` line breaking, pip's `join_lines` (a trailing `\\`
+    continues a line, a full-line comment never does), then comment stripping.
+    """
+    if text.startswith("\ufeff"):
+        text = text[1:]
+    joined: list[tuple[int, str]] = []
+    pending: list[str] = []
+    first = 0
+    for line_no, line in enumerate(text.splitlines(), start=1):
+        is_comment = line.lstrip().startswith("#")
+        if not line.endswith("\\") or is_comment:
+            if is_comment:
+                line = " " + line
+            if pending:
+                pending.append(line)
+                joined.append((first, "".join(pending)))
+                pending = []
+            else:
+                joined.append((line_no, line))
+        else:
+            if not pending:
+                first = line_no
+            pending.append(line.strip("\\"))
+    if pending:
+        joined.append((first, "".join(pending)))
+    logical: list[tuple[int, str]] = []
+    for line_no, line in joined:
+        line = _strip_pip_comment(line)
+        if line:
+            logical.append((line_no, line))
+    return logical
+
+
+def _pypi_artifact_names(value: str) -> set[str]:
+    """PEP 503 names of wheel/sdist files a URL or path in `value` points at.
+
+    Read from whole (percent-decoded) words before the package tokenizer, which
+    would split credentials (`user:pass@host`) or `+local` / `1!` versions
+    apart and lose the filename.
+    """
+    names: set[str] = set()
+    # URL parsers drop tab/CR/LF (`.wh\tl` is `.whl`): prefilter every base form.
+    bases = {value, _canonical_url_text(value)}
+    if not any(
+        "%" in base
+        or any(suffix in base.lower() for suffix in (".whl", *_SDIST_SUFFIXES))
+        for base in bases
+    ):
+        return names  # no artifact filename can be spelled here
+    for base in bases:
+        for word in re.split(r"[\s\"'<>,;()\[\]{}]+", base):
+            # Like pip's `Link.filename`: cut query/fragment on the RAW text (a
+            # decoded `%23` / `%3F` is part of the path, not a delimiter), then
+            # percent-decode the path, drop trailing slashes (`….whl/`, `%2F`),
+            # take the basename, and decode that again.
+            path = word.split("#", 1)[0].split("?", 1)[0]
+            for decoded in _percent_decodings(path):
+                basename = re.split(r"[/\\=]", decoded.rstrip("/\\"))[-1]
+                for candidate in _percent_decodings(basename):
+                    identity = _pypi_artifact_identity(candidate)
+                    if identity is not None:
+                        names.add(_pep503(identity[0]))
+    return names
+
+
+def _pypi_line_identities(line: str) -> set[str]:
+    """PEP 503 names a requirements line could install, as discovery sees them."""
+    names = _pypi_artifact_names(line)
+    for form in _percent_decodings(line):
+        for token in _TOKEN_RE.findall(form):
+            for candidate in _candidates(token):
+                names.add(_pep503(candidate))
+    return names
+
+
+def _extract_requirements_version_info(
+    lockfile: Path, package: str, text: str | None = None
+) -> LockfilePackageVersions:
+    text = _read_lockfile_text(lockfile, text, strict=False)
+    if text is None or "\ufffd" in text:
+        # Not valid UTF-8: pip falls back to the locale codec, whose line
+        # breaks (latin-1 `\x85` is NEL) can differ from what was read here.
+        return LockfilePackageVersions(mixed_or_untrusted=True)
+    target = _pep503(package)
+    versions: set[str] = set()
+    untrusted = False
+    for _line_no, line, identities in _requirements_index(text):
+        if target not in identities:
+            continue
+        match = _REQUIREMENT_PIN_RE.fullmatch(line)
+        if (
+            match is None
+            or "${" in line
+            or _pep503(match.group("name")) != target
+            or _pep440_key(match.group("version")) is None
+        ):
+            # Any other declaration naming the package (range, bare name, URL,
+            # editable/VCS, env substitution) does not pin a release.
+            untrusted = True
+            continue
+        rest = match.group("rest")
+        marker, options = rest, ""
+        option_at = re.search(r"(?:^|\s)--?[A-Za-z]", rest)
+        if option_at is not None:
+            marker, options = rest[: option_at.start()], rest[option_at.start():]
+        marker = marker.strip()
+        if (marker and not marker.startswith(";")) or not all(
+            _REQUIREMENT_HASH_RE.fullmatch(option)
+            for option in options.split()
+        ):
+            untrusted = True
+            continue
+        versions.add(match.group("version"))
+    return LockfilePackageVersions(
+        versions=tuple(sorted(versions)), mixed_or_untrusted=untrusted
+    )
+
+
 _LOCKFILE_VERSION_EXTRACTORS: dict[
     str, Callable[[Path, str, str | None], LockfilePackageVersions]
 ] = {
@@ -2307,6 +2862,9 @@ _LOCKFILE_VERSION_EXTRACTORS: dict[
     "bun.lock": _extract_bun_lock_version_info,
     "bun.lockb": _extract_bun_lockb_version_info,
     "Cargo.lock": _extract_cargo_lock_version_info,
+    "uv.lock": _extract_uv_lock_version_info,
+    "poetry.lock": _extract_poetry_lock_version_info,
+    "requirements.txt": _extract_requirements_version_info,
 }
 assert set(_LOCKFILE_VERSION_EXTRACTORS) == set(_LOCKFILE_POLICY_ECOSYSTEMS)
 _IOC_VERSION_ECOSYSTEMS = frozenset(_LOCKFILE_POLICY_ECOSYSTEMS.values())
@@ -2603,6 +3161,29 @@ def _yaml_has_unsupported_quoting(text: str, *, yarn_classic: bool) -> bool:
     return flow_depth > 0
 
 
+_PEP263_CODING_RE = re.compile(rb"coding[:=]\s*([-\w.]+)")
+
+
+def _requirements_foreign_codec(raw: bytes) -> bool:
+    """True when pip would decode requirements.txt as something other than UTF-8.
+
+    pip honours UTF-16/32 byte-order marks and a PEP 263 `coding:` cookie in the
+    first two lines; read as UTF-8 such a file can hide every identity.
+    """
+    if raw.startswith((
+        codecs.BOM_UTF16_LE, codecs.BOM_UTF16_BE,
+        codecs.BOM_UTF32_LE, codecs.BOM_UTF32_BE,
+    )):
+        return True
+    for line in raw.split(b"\n")[:2]:
+        if line[:1] == b"#" and (match := _PEP263_CODING_RE.search(line)):
+            # pip decodes with the first cookie it finds.
+            return match.group(1).decode("ascii", "replace").lower().replace(
+                "_", "-"
+            ) not in ("utf-8", "utf8", "ascii", "us-ascii")
+    return False
+
+
 def _has_unsupported_identity_encoding(lockfile_name: str, text: str) -> bool:
     """Reject encodings our bounded exact extractors cannot safely interpret."""
     if lockfile_name in _YAML_LOCKFILES:
@@ -2610,6 +3191,15 @@ def _has_unsupported_identity_encoding(lockfile_name: str, text: str) -> bool:
             text,
             yarn_classic=lockfile_name == "yarn.lock"
             and _YARN_BERRY_METADATA_RE.search(text) is None,
+        )
+    if lockfile_name in _TOML_LOCKFILES:
+        # Without tomllib, only raw text is scanned. Any escape that can spell
+        # a letter (`\u`, `\U`, TOML 1.1 `\x`) or a line-ending backslash
+        # (multi-line continuation, even before trailing spaces) could hide an
+        # identity; the routine `\"` / `\\` / `\n` escapes cannot.
+        return tomllib is None and any(
+            not escaped or escaped not in '"\\bfnrt'
+            for escaped in re.findall(r"\\(.|$)", text, re.DOTALL | re.MULTILINE)
         )
     if lockfile_name != "Cargo.lock":
         return False
@@ -2723,8 +3313,11 @@ def ioc_grep(
     URLs on non-default hosts ({host label: {lockfile: {url}}}) for the
     non-gating registry-host advisory.
     """
-    # Normalized view of the IoC set for PyPI matching (built once).
-    iocs_pep503 = {_pep503(i): i for i in iocs}
+    # Normalized view of the IoC set for PyPI matching (built once). A multimap:
+    # names that normalize alike are each classified, none overwrites another.
+    iocs_pep503: dict[str, list[str]] = {}
+    for name in iocs:
+        iocs_pep503.setdefault(_pep503(name), []).append(name)
     hits: list[IocHit] = []
     unreadable: list[Path] = []
     total_bytes = 0
@@ -2758,6 +3351,8 @@ def ioc_grep(
             continue
         is_pypi = lf.name in _PYPI_LOCKFILES
         is_npm = _LOCKFILE_POLICY_ECOSYSTEMS.get(lf.name) == "npm"
+        foreign_codec = lf.name == "requirements.txt" and _requirements_foreign_codec(raw)
+        scope_ecosystem = _LOCKFILE_SCOPE_ECOSYSTEMS.get(lf.name)
         recorded_in_file: set[str] = set()
 
         def note_sources(value: str) -> None:
@@ -2777,13 +3372,20 @@ def ioc_grep(
             # npm-family managers download recorded tarball URLs verbatim and
             # registries percent-decode paths, so `%6beyv` must still surface
             # `keyv`, and URL credentials must not hide the path.
-            forms = _percent_decodings(value) if is_npm else (value,)
+            # Python installers percent-decode artifact URLs too.
+            forms = _percent_decodings(value) if is_npm or is_pypi else (value,)
             candidates = (
                 cand
                 for form in forms
                 for tok in _TOKEN_RE.findall(form)
                 for cand in _candidates(tok)
             )
+            if is_pypi:
+                # A bare wheel/sdist URL or path installs the distribution its
+                # filename names: `litellm-1.0-py3-none-any.whl` -> `litellm`.
+                candidates = itertools.chain(
+                    candidates, sorted(_pypi_artifact_names(value))
+                )
             if is_npm and ":" in value:
                 # `_url_path_identities` checks each normalized form (a tab
                 # inside `https:\t//` is dropped by URL parsers).
@@ -2791,13 +3393,18 @@ def ioc_grep(
                     candidates, sorted(_url_path_identities(value))
                 )
             for cand in candidates:
-                matched = None
-                if cand in iocs:
-                    matched = cand
-                elif is_pypi:
-                    matched = iocs_pep503.get(_pep503(cand))
-                if matched and matched not in recorded_in_file:
+                matches = [cand] if cand in iocs else []
+                if is_pypi:
+                    matches.extend(
+                        name for name in iocs_pep503.get(_pep503(cand), ())
+                        if name != cand
+                    )
+                for matched in matches:
+                    if matched in recorded_in_file:
+                        continue
                     entry = iocs[matched]
+                    if entry.scope is not None and scope_ecosystem not in entry.scope:
+                        continue  # a VERSION-only entry of another ecosystem
                     hits.append(IocHit(
                         lockfile=lf,
                         ioc=entry.name,
@@ -2831,7 +3438,9 @@ def ioc_grep(
                 note_sources(url)
             continue
 
-        unsupported_encoding = _has_unsupported_identity_encoding(lf.name, text)
+        unsupported_encoding = foreign_codec or _has_unsupported_identity_encoding(
+            lf.name, text
+        )
         for line_no, line in enumerate(text.splitlines(), start=1):
             record_candidates(line, line_no)
             if (
@@ -2847,6 +3456,12 @@ def ioc_grep(
                     value = _yarn_field_value(content, key)
                     if value is not None:
                         note_sources(_yaml_scalar_text(value))
+        if lf.name == "requirements.txt" and "\\" in text:
+            # pip joins `\` continuations first: `lite\` + `llm==1.0` installs
+            # `litellm`, which no single raw line spells. (Without a backslash
+            # every logical line is a substring of a raw line already scanned.)
+            for line_no, line in _pip_logical_lines(text):
+                record_candidates(line, line_no)
         if lf.name == "pnpm-lock.yaml" and not unsupported_encoding:
             for node in _yaml_mapping_index(text.splitlines()).nodes:
                 if "://" not in _canonical_url_text(node.value):
@@ -2873,6 +3488,30 @@ def ioc_grep(
             # to the textual gate cannot be certified clean by a partial parser.
             unreadable.append(lf)
             continue
+
+        if lf.name in _TOML_LOCKFILES and tomllib is not None:
+            document = _parse_toml(text)
+            if document is None:
+                # Malformed TOML (duplicate keys included) cannot be certified
+                # clean: escaped identifiers may be invisible in raw text.
+                unreadable.append(lf)
+                continue
+            stack = [document]
+            while stack:
+                value = stack.pop()
+                if isinstance(value, dict):
+                    stack.extend(value.values())
+                    strings = value.keys()
+                elif isinstance(value, list):
+                    stack.extend(value)
+                    continue
+                elif isinstance(value, str):
+                    strings = (value,)
+                else:
+                    continue
+                for string in strings:
+                    # Decoded TOML may reveal `lite\u006clm` as `litellm`.
+                    record_candidates(string, 0)
 
         if lf.name in _JSON_LOCKFILES or lf.name in _JSONC_LOCKFILES:
             duplicate_key = False
@@ -2998,11 +3637,20 @@ def classify_ioc_hits(
             # key, so there is no release to compare with the denylist.
             continue
 
-        matched = [
-            (version, line_no)
-            for version, line_no in evidence
-            if version in version_info.versions
-        ]
+        if ecosystem == "PyPI":
+            # PEP 440 equality: `1.82.7.0` in a lockfile is the denied 1.82.7.
+            locked = {_pep440_key(version) for version in version_info.versions}
+            matched = [
+                (version, line_no)
+                for version, line_no in evidence
+                if _pep440_key(version) in locked
+            ]
+        else:
+            matched = [
+                (version, line_no)
+                for version, line_no in evidence
+                if version in version_info.versions
+            ]
         if matched:
             for version, line_no in matched:
                 classified.append(replace(
@@ -3018,6 +3666,9 @@ def classify_ioc_hits(
 
         if use_osv:
             for version in version_info.versions:
+                if ecosystem == "PyPI":
+                    # Query the canonical spelling, not the lockfile's.
+                    version = _pep440_canonical(version) or version
                 result = query(hit.ioc, ecosystem or "", version)
                 if result.status == "success" and _has_malicious_osv_family(
                     result.vulns
