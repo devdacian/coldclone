@@ -10397,3 +10397,11 @@ VERSION: PyPI | telnyx | 4.87.2
 # workflow after attacker commits (0.5.143 and 0.5.145 clean). VERSION-only, so npm-scoped:
 # the vendor's PyPI/crates.io `tensorlake` packages are not matched.
 VERSION: npm | tensorlake | 0.5.144
+
+# source: https://osv.dev/vulnerability/MAL-2026-2307 — queried 2026-10-22
+# also: https://github.com/axios/axios/issues/10636 (maintainer post-mortem) — 2026-04-02
+# Compromised legitimate npm package (hijacked maintainer account, 2026-03-31): the two
+# releases below pulled in the malicious `plain-crypto-js` dependency (listed above).
+# Exact malicious releases only; every other axios version is not matched.
+VERSION: npm | axios | 1.14.1
+VERSION: npm | axios | 0.30.4
