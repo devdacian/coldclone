@@ -33,7 +33,7 @@
 # coldclone tool (the package names are public threat intel). Refresh it in place
 # here; there is no upstream copy to sync from.
 
-LAST_REFRESHED: 2026-10-01
+LAST_REFRESHED: 2026-10-22
 
 # source: ReversingLabs — Atomic/Exodus wallet stealer
 ethers-provider2
@@ -9237,3 +9237,1140 @@ zzwandtemp1778552518
 zzwmgweb02
 zzzagent0mzqkj1f_proxy
 zzzltestfoobarxyz
+
+# source: https://www.stepsecurity.io/blog/subql-ecosystem-compromised ; https://github.com/advisories/GHSA-9333-3c4x-x3h5 (MAL-2026-17571) — 2026-10-05
+# SubQuery compromise: postinstall manifest-cache.js loader. Compromised legitimate package
+# (288 releases since 2020); exact malicious release only (5.8.3-onf-rt1 canary is clean).
+@subql/common
+VERSION: npm | @subql/common | 5.8.3
+
+# source: https://github.com/advisories/GHSA-2gvv-vgvw-559c ; GHSA-mj95-29f2-vxg2 ; GHSA-58jf-66x8-7q28 ; GHSA-vhv8-cmrm-5fpr (MAL-2026-18127..18130) — 2026-10-22
+# One maintainer's @sudobility scope hijacked: postinstall scripts/miner.sh XMRig dropper.
+# Compromised legitimate packages (12-59 earlier clean releases each); exact releases only.
+@sudobility/indexer_client
+@sudobility/shaperouter_client
+@sudobility/testomniac_client
+@sudobility/wildduck_client
+VERSION: npm | @sudobility/indexer_client | 0.0.146
+VERSION: npm | @sudobility/shaperouter_client | 0.0.14
+VERSION: npm | @sudobility/testomniac_client | 0.0.131
+VERSION: npm | @sudobility/wildduck_client | 2.3.102
+
+# source: https://github.com/advisories/GHSA-8c34-p746-v5rq ; GHSA-hhr5-rjw6-9hr5 (MAL-2026-17911) — 2026-10-16
+# Long-lived itsa-react-* packages (since 2016) with a 2025-05-04 malicious release, also on
+# Socket's PolinRider tracker. Exact malicious releases only (itsa-react-button is below).
+itsa-react-focuscontainer
+itsa-react-maskedinput
+VERSION: npm | itsa-react-focuscontainer | 16.0.10
+VERSION: npm | itsa-react-maskedinput | 16.1.2
+
+# source: https://github.com/advisories/GHSA-gr77-3hqf-674h (MAL-2026-17709) — 2026-10-08
+# Compromised legitimate package (45 earlier clean releases since 2025-02); exact release only.
+revine
+VERSION: npm | revine | 2.4.0
+
+# source: https://github.com/advisories/GHSA-h3fw-vmw2-h9xc (MAL-2026-13605 ; MAL-2026-17710) — 2026-10-09
+# pnpm-compatible installer whose 7.x releases hardcode an author-controlled registry
+# (registry-pxnpm.rdc.nfjbill.ren). 52 earlier releases since 2019 are not flagged; exact
+# malicious releases only.
+pxnpm
+VERSION: npm | pxnpm | 7.0.0
+VERSION: npm | pxnpm | 7.0.0-beta.6
+VERSION: npm | pxnpm | 7.0.0-beta.8
+VERSION: npm | pxnpm | 7.0.1
+VERSION: npm | pxnpm | 7.0.2
+
+# source: https://github.com/advisories/GHSA-x567-p88w-3697 (MAL-2026-16333 update) — 2026-10-01
+# homestack-cheer (listed above with 1.1.9 only) is a Stripe checkout skimmer in every
+# release: the updated advisory and DataDog now flag all versions and npm has replaced it
+# with a security placeholder. Record every flagged release so none reads as safe.
+VERSION: npm | homestack-cheer | 1.0.0
+VERSION: npm | homestack-cheer | 1.0.1
+VERSION: npm | homestack-cheer | 1.0.2
+VERSION: npm | homestack-cheer | 1.1.0
+VERSION: npm | homestack-cheer | 1.1.1
+VERSION: npm | homestack-cheer | 1.1.2
+VERSION: npm | homestack-cheer | 1.1.3
+VERSION: npm | homestack-cheer | 1.1.5
+VERSION: npm | homestack-cheer | 1.1.6
+VERSION: npm | homestack-cheer | 1.1.7
+VERSION: npm | homestack-cheer | 1.1.8
+
+# source: https://www.sonatype.com/blog/q3-2026-open-source-malware-index-when-compromise-compounds — 2026-10-08
+# PyPI package impersonating MLflow; corroborated by https://osv.dev/vulnerability/MAL-2026-10779.
+# Removed from PyPI; attacker-owned, all versions.
+mlflow-ui
+
+# source: https://www.aikido.dev/blog/anthropic-rogue-agents-package-stole-keys — 2026-07-31
+# PyPI dependency-confusion package (malicious setup.py, 999.9.9); corroborated by
+# https://osv.dev/vulnerability/MAL-2026-5755. Removed from PyPI; attacker-owned.
+anthropickit
+
+# source: https://socket.dev/api/public/supply-chain-attacks/polinrider/packages.csv — 2026-10-21
+# PolinRider (DPRK; compromised maintainer accounts and repos), tracker rows detected
+# 2026-09-25..2026-10-21. npm: exact malicious releases only. Go modules are
+# package-wide (no Go exact-version extractor), both case variants as Socket lists them.
+@react-native-aria/separator
+itsa-react-button
+spoint
+github.com/anentrypoint/cors
+github.com/UseLiberty/swagin
+github.com/useliberty/swagin
+github.com/boostcampwm-2022/web20-oao
+github.com/edobrb/opa
+github.com/ushahidi/platform-release
+github.com/BeWallow/dsr-verify
+github.com/bewallow/dsr-verify
+github.com/MediDrive-Tech/osrm-backend
+github.com/medidrive-tech/osrm-backend
+github.com/helios-network/cosmos-sdk
+github.com/zaain-ali/local-vault
+VERSION: npm | @react-native-aria/separator | 0.2.7
+VERSION: npm | itsa-react-button | 16.0.11
+VERSION: npm | spoint | 0.1.695
+VERSION: npm | spoint | 0.1.696
+VERSION: npm | spoint | 0.1.697
+VERSION: npm | spoint | 0.1.698
+VERSION: npm | spoint | 0.1.699
+VERSION: npm | spoint | 0.1.700
+
+# source: https://socket.dev/api/public/supply-chain-attacks/north-korea-s-contagious-interview-campaign/packages.csv — 2026-10-09
+# North Korea Contagious Interview -- Socket campaign tracker rows detected
+# 2026-09-25..2026-10-09. Attacker-owned packages; all versions.
+vite-postcss-helper
+proc-log-cmd
+react-content-parser
+react-prop-types-helper
+react-ipack
+chai-net-test
+web-pool
+redux-ace
+jsonchalk
+selfsigned-generator
+chai-as-fusion
+mock-transactions-sdk
+solidity-gas-watcher
+solidity-map
+
+# source: https://socket.dev/api/public/supply-chain-attacks/keyv-and-cacheable-compromise/packages.csv — 2026-09-29
+# keyv/cacheable ChainDrop worm -- late Go-module row. Attacker-owned packages; all
+# versions.
+github.com/rainb0w-clwn/node-cache-manager-fs-binary-ts
+
+# source: https://xygeni.io/blog/xygeni-malicious-code-digest-92/ — 2026-10-19
+# Xygeni Malicious Code Digest 92 (Oct 9-15 2026): Baileys impersonation, inflated-
+# version dependency confusion. Attacker-owned packages; all versions.
+@dcloude/baileys
+@bellachann/techxatz
+@bellachann/sinitech
+@corexium/xbails
+@ungke/baileys
+@xmiybi/baileys
+
+# source: https://xygeni.io/blog/malicious-code-digest-monthly-recap-september-2026/ — 2026-09-30
+# Xygeni Malicious Code Digest monthly recap, September 2026 (self-deleting anti-
+# proctoring operator; Strapi meeb plugins; dependency confusion). Attacker-owned
+# packages; all versions.
+amicat
+bmcat
+eyevox
+moidevh
+moidevk
+fs-pwn-meeb322k
+
+# source: https://xygeni.io/blog/malicious-code-digest-monthly-recap-september-2026/ — 2026-09-30
+# Xygeni September 2026 recap: PyPI. Attacker-owned packages; all versions.
+samaki
+darkglitch
+
+# source: https://xygeni.io/blog/risky-business-self-deleting-npm-packages/ — 2026-09-18
+# Risky Business: self-deleting anti-proctoring packages + 2FA-named stealers (pre-
+# window backfill). Attacker-owned packages; all versions.
+moidev
+moidevx
+moidevz
+moideva
+auth-otp
+secretkey-2fa
+secretkey2fa
+2fa-secretkey
+mt-ts-serverless-starter
+hex-encode-utils
+
+# source: https://xygeni.io/blog/quietpolyfill-npm-dropper-import-trigger-ignore-scripts/ — 2026-09-18
+# QuietPolyfill: import-time (_polyfill.js) dropper, dependency-confusion names (pre-
+# window backfill). Attacker-owned packages; all versions.
+beaver-ui-drawer
+beaver-ui-actions-button
+beaver-ui-card-large
+beaver-ui-date-range-picker
+beaver-ui-form
+beaver-ui-form-modal
+beaver-ui-form-object
+beaver-ui-grid
+beaver-ui-header
+beaver-ui-hooks
+beaver-ui-icon-lock
+beaver-ui-items-with-more
+beaver-ui-layout
+accounts-final-form
+accounts-loading-state
+accounts-timeline
+afisha-storybook-default
+bcore-bravo-eslint-config
+arbocrate-sla-prober-arbocrate-sla-prober-core
+a.poltoradnev-package-c
+
+# source: https://safedep.io/malfex-imgdecode-npm-native-addon-loader — 2026-10-13
+# MALFEX imgdecode native Windows DLL loader. Attacker-owned packages; all versions.
+imgdecode
+
+# source: https://www.cloudsek.com/blog/nebula-fake-ai-sdk-npm-packages-windows-rat — 2026-10-08
+# NEBULA: fake NebulaAI SDK packages delivering modified KNTRAT Windows RAT. Attacker-
+# owned packages; all versions.
+testtestkjkldfnjdfn
+
+# source: https://www.cloudsek.com/blog/tophit-npm-typosquat-flood-gpu-cryptojacking-server — 2026-09-29
+# TOPHIT: @prime0 scoped typosquat flood (85 packages, remote command beacon to
+# 69.48.229.140). Attacker-owned packages; all versions.
+@prime0/aajv
+@prime0/ajjv
+@prime0/ajvs
+@prime0/ani-regex
+@prime0/ani-styles
+@prime0/asi-regex
+@prime0/asi-styles
+@prime0/baanced-match
+@prime0/bace-expansion
+@prime0/blanced-match
+@prime0/brce-expansion
+@prime0/clor-convert
+@prime0/clor-name
+@prime0/coor-name
+@prime0/dhalk
+@prime0/dommander
+@prime0/eadable-stream
+@prime0/ecape-string-regexp
+@prime0/eebug
+@prime0/elint-visitor-keys
+@prime0/emji-regex
+@prime0/eoji-regex
+@prime0/esint-visitor-keys
+@prime0/febug
+@prime0/fhalk
+@prime0/fommander
+@prime0/gglob
+@prime0/glb-parent
+@prime0/glbo
+@prime0/gob-parent
+@prime0/hich
+@prime0/icomatch
+@prime0/inipass
+@prime0/lgob
+@prime0/lob-parent
+@prime0/lr-cache
+@prime0/lu-cache
+@prime0/miimatch
+@prime0/miipass
+@prime0/mnimatch
+@prime0/mnipass
+@prime0/moji-regex
+@prime0/nsi-regex
+@prime0/nsi-styles
+@prime0/olor-convert
+@prime0/olor-name
+@prime0/ource-map
+@prime0/piomatch
+@prime0/race-expansion
+@prime0/radable-stream
+@prime0/rap-ansi
+@prime0/redable-stream
+@prime0/ru-cache
+@prime0/scape-string-regexp
+@prime0/sebug
+@prime0/semer
+@prime0/semvr
+@prime0/slint-visitor-keys
+@prime0/smver
+@prime0/sorce-map
+@prime0/spports-color
+@prime0/sring-width
+@prime0/srip-ansi
+@prime0/sting-width
+@prime0/stip-ansi
+@prime0/suports-color
+@prime0/surce-map
+@prime0/tpe-fest
+@prime0/tring-width
+@prime0/trip-ansi
+@prime0/tsib
+@prime0/tslb
+@prime0/tslibs
+@prime0/tye-fest
+@prime0/upports-color
+@prime0/wap-ansi
+@prime0/whch
+@prime0/whih
+@prime0/wrp-ansi
+@prime0/xhalk
+@prime0/xommander
+@prime0/ype-fest
+
+# source: https://www.cloudsek.com/blog/ghappier-malware-loader-npm-supply-chain-attack — 2026-09-20
+# GHAPPIER loader via trusted-publishing release (linked to PolinRider) (pre-window
+# backfill). Compromised legitimate package; exact malicious releases only.
+@dforge-core/dforge-mcp
+VERSION: npm | @dforge-core/dforge-mcp | 0.2.20
+VERSION: npm | @dforge-core/dforge-mcp | 0.2.21
+
+# source: https://www.elastic.co/security-labs/threat-command/apex-accelerator-malicious-npm-packages — 2026-10-12
+# REF8801 fake "Apex Accelerator" Web3 accelerator (CloudSyncD macOS / Telegram-exfil
+# Windows stealer; AI-agent traffic hijack). Attacker-owned packages; all versions.
+@copilot-mcp/apex
+
+# source: https://cyberxyz.io/blog/bufferzonecorp-go-rubygems-ci-stealer-2026-10-02 — 2026-10-02
+# BufferZoneCorp Go modules + knot-* RubyGems CI secret stealers (primary: Socket, May
+# 2026). Attacker-owned packages; all versions.
+github.com/BufferZoneCorp/config-loader
+github.com/BufferZoneCorp/go-envconfig
+github.com/BufferZoneCorp/go-metrics-sdk
+github.com/BufferZoneCorp/go-retryablehttp
+github.com/BufferZoneCorp/go-stdlib-ext
+github.com/BufferZoneCorp/go-stdlog
+github.com/BufferZoneCorp/go-weather-sdk
+github.com/BufferZoneCorp/grpc-client
+github.com/BufferZoneCorp/log-core
+github.com/BufferZoneCorp/net-helper
+
+# source: https://cyberxyz.io/blog/bufferzonecorp-go-rubygems-ci-stealer-2026-10-02 — 2026-10-02
+# BufferZoneCorp knot-* RubyGems (primary: Socket, May 2026). Attacker-owned packages;
+# all versions.
+knot-activesupport-logger
+knot-devise-jwt-helper
+knot-rack-session-store
+knot-rails-assets-pipeline
+knot-rspec-formatter-json
+knot-date-utils-rb
+knot-simple-formatter
+
+# source: https://api.github.com/advisories?type=malware&ecosystem=npm&published=2026-10-01..2026-10-22 + https://osv.dev (MAL records modified 2026-10-01..2026-10-22) — queried 2026-10-22
+# New npm malware advisories in the window. Package-wide: advisory has an all-versions
+# range, or the package is removed / a security placeholder, or it has no legitimate
+# pre-existing history (>= 5 clean releases and >= 60 days before the first bad one).
+# Includes malicious Baileys/libsignal WhatsApp-library forks, Tailwind/animate.css and CSS-polyfill
+# lookalikes, hardhat-* lookalikes, opencode2 / ChatGPT / Claude desktop "setup" lures,
+# Epic Games and other dependency-confusion probes (OSV-only MAL-2025-492xx included),
+# and the mp3/album SEO-spam flood. Excluded as cross-ecosystem collisions with live
+# packages elsewhere: api-anthropic, centralogger, mod-manager, monitoring-agent,
+# passwordcracker, vectorizers; and tensorlake (compromised npm 0.5.144 only, but the
+# name is the vendor's live PyPI/crates.io package and a plain entry would HALT every
+# Python/Rust lockfile using it).
+1n9lip
+3gr2dj
+3gr841
+3qamjp
+4p9kgm
+5k5t5q
+5xzkuy
+8h66ok
+8i7pp4
+@abgular/core
+@accenturecodefoundry/mfe-pot-shared-ui-scds-core
+@alannxd/baileys
+@alipclutch/libsignal-node
+@an1mshnpmb9c84920/gat-scope-target-125ec19a
+@an1mshnpmb9c84920/oidc-cross-cafb9d929e
+@an1mshnpmb9c84920/pipe-compat-m19r8
+@an1mshnpmb9c84920/pipe-dns-m19t2
+@an1mshnpmb9c84920/stage-fn-m19p2
+@an1mshnpmb9c84920/stage-outer-m19s5
+@an1mshnpmb9c84920/stage-repo-m19g7
+@anfular/core
+@angjlar/core
+@anguar/core
+@angulaar/cli
+@angulaar/core
+@angularr/cli
+@angularr/core
+@angularr/router
+@angulr/core
+@angulra/cli
+@angulra/core
+@angupar/core
+@anngular/core
+@anuglar/core
+@apexacc/audit
+@apexacc/cli
+@aseppxyzz12/baileys
+@babell/core
+@badzz88/eslint-config
+@bellaxchuu/bails
+@bellaxchuu/libsignal-node
+@bellaxchuu/overbugs
+@bellaxchuu/xbailey
+@bellaxchuu/xbails
+@bellaxchuu/yarnbails
+@beloved-lenora/opencode-btw
+@beloved-lenora/opencode-goal
+@beloved-lenora/opencode-orchestrator
+@beloved-lenora/opencode-shared-rpc
+@beloved-lenora/opencode-shell-guard
+@beloved-lenora/opencode-stats
+@beloved-lenora/opencode-todo
+@bitwardne/cli
+@bitwardne/jslib
+@bluewin/utils
+@brick-v2/brand
+@brick-v2/core
+@brick-v2/form
+@brick-v2/icons
+@brick-v2/table
+@brick-v2/tour
+@celestial-community/baileys
+@chatest/baileys
+@coopeuch/button
+@coopeuch/common
+@coopeuch/components
+@coopeuch/config
+@coopeuch/core
+@decoopus/chatgpt-setup
+@decoopus/claude-setup
+@design-system-coopeuch/web
+@developmentyora/baileyss
+@developmentyora/yorakids
+@diezyclutch/baileys
+@dransay/address-validation
+@dransay/api
+@dransay/db
+@dransay/feature-flags
+@dransay/logger
+@dransay/phone-fix-test
+@dransay/secrets
+@dreamguyxeon/baileyx
+@dreamguyxeon/libsignal-node
+@erlanzz/baileys
+@fazzcodestudio/baileys
+@fazzcodestudio/fbot
+@fazzcodestudio/mediaformater
+@fcsmc/commercial-analytics
+@flexmr/survey-client
+@flexmr/survey-conversation
+@flexmr/ui
+@flexmr/utils
+@fluxionii/baileys
+@fmr-ap149494/apex-base-component
+@galicia-toolkit-cheques-nc/front
+@galicia-toolkit-nestjs-20-lite/archetype
+@galicia-toolkit-nestjs-20-lite/commons
+@galicia-toolkit-nestjs-20-lite/paas
+@galicia-toolkit-nestjs-20/archetype
+@galicia-toolkit-nestjs-20/commons
+@galicia-toolkit-nestjs-20/paas
+@galicia-toolkit-nestjs/archetype
+@galicia-toolkit-nestjs/commons
+@galicia-toolkit-nestjs/paas
+@galicia-toolkit-nestjs/swagger
+@galicia-toolkit/core
+@galicia-toolkit/error-master
+@galicia-toolkit/spa-build-config
+@galicia-toolkit/tag-manager
+@ikanngeming/blubub
+@ikanngeming/npm
+@inpeek/odata
+@inpeek/odata-angular
+@itsmee_aizat.id/baileys
+@itsmee_aizat.id/baileys2
+@kibt/www-nuxt-i18n
+@kre64/hello-npm-test
+@kxafunc/xbails
+@lekzo_dev/amprem
+@library-wide/library-shell
+@mikudeveloper/libsignal-node
+@mntv-analysis/ui
+@mntv-analysis/ui-components
+@mntv-analysis/workspaces-components
+@modss/libsignal
+@myorder-frontend-commons/analytics
+@nagular/core
+@nagular/router
+@newspage/lib-ng-async-routes-ui
+@newspage/libx-amount
+@pinecone-experience/messages
+@pkgship/frpc-linux-arm64
+@platform-services/hrm-mfe-core
+@praveenvjpm/color-utils-7210
+@qngular/core
+@revizahoshii/hoshino-fake-server
+@revizahoshii/hoshino-mcp-server
+@revizahoshii/hoshino-media-utils
+@revizahoshii/hoshino-native
+@revizahoshii/hoshino-store-mongo
+@revizahoshii/hoshino-store-mysql
+@revizahoshii/hoshino-store-postgres
+@revizahoshii/hoshino-store-redis
+@revizahoshii/hoshino-store-sqlite
+@revizahoshii/hoshino-voip
+@revizahoshii/hoshino-wam
+@s4yhiitestpoc/r2-https
+@s4yhiitestpoc/r2-https-b
+@s4yhiitestpoc/r3-https
+@s4yhiitestpoc/scan-https-d
+@saazkira/eslint-config
+@saazkira/libsignal-node
+@sanzoffc/libsignal-node
+@securihackbot/depconf-stage-1792484738
+@smart-dev-wa/baileys
+@smwebserver/static
+@tunstock/remact-dom
+@user-interface-common/common-styles
+@wanzlonely/bailsforme
+@wanzlonely/bailsme
+@wanzlonelyy/bailslonely
+@wanzxlonelyy/bailslonely
+@we3js/framework
+@worrisome/aaaa
+@worrisome/reutil
+@wxwxtest/testrrrdd
+@xatancchii/natabaileys
+@xayz/brat-generator
+@xayz/libsignal-node
+@xxxfnbs21/hello-demo
+@zaka13/zakasite
+@ziedzzz/demo-canary
+a-lbum-do-wnload-avai-lable-file-10635-about-to-choke-pzt0k-onnsvp
+a-lbum-do-wnload-avai-lable-file-11522-seven-and-the-ragged-tiger-bkmqg-xorids
+a-lbum-do-wnload-avai-lable-file-2019-138062-i-need-a-new-war-pp6yu-vclmgu
+a-lbum-do-wnload-avai-lable-file-36733-tchamantche-9uiic-rfzaip
+a-lbum-do-wnload-avai-lable-file-playing-the-angel-l9tng-nkbcwn
+a-vailable-al-bum-513977-rant-in-e-minor-lybr0-bdhlsb
+a-vailable-al-bum-file-101379-communion-mt1lk-dvshll
+a-vailable-al-bum-file-19105-filles-de-kilimanjaro-4syt9-khnipp
+a-vailable-al-bum-file-2015-39171-harmlessness-khwlm-ihtwah
+a-vailable-al-bum-file-30258-secrets-of-the-beehive-rk1pl-vebirt
+a-vailable-al-bum-file-36850-other-peoples-lives-vys1z-fuucqk
+a-vailable-al-bum-file-the-world-wont-end-7io2n-pbncia
+a11y-tabindex-manager
+abbishal-poc
+abbishal-poc-as-dependency
+abbishal-poc2
+aemath-baileys
+ai-workshop-maa15-radio
+ai-workshop-radio-app
+ai-workshop-radio-lambda
+alb-um-availa-ble-zip-mp3-file-31673-finally-1m7lu-usrooy
+alb-um-availa-ble-zip-mp3-file-43838-stories-of-the-years-sslgg-bqfcko
+alb-um-availa-ble-zip-mp3-file-43857-green-light-mrpup-qmtshy
+alb-um-availa-ble-zip-mp3-file-470287-watch-my-moves-2zscf-aatbzj
+alb-um-availa-ble-zip-mp3-file-6053-the-specials-giqmz-flbewh
+alb-um-availa-ble-zip-mp3-file-someone-to-drive-you-home-vbwzp-koufrz
+aldi02-baileys
+alexa-cybertron-team-code-review-agent
+amprem
+animate-tailwind-kit
+animate-twcss-bridge
+animate-twcss-pack
+animatecss-tailwind-adapter
+animatecss-tailwind-binary
+animatecss-tailwind-bridge
+animatecss-tailwind-graphic
+animatecss-tailwind-helper
+animatecss-tailwind-luminary
+animatecss-tailwind-plugin
+animatecss-tailwind-presets
+animatecss-tailwind-vectrix
+another-very-long-name
+ap3-foundations-ui
+api-nebula
+apl-rive-renderer
+aqj3w7
+aria-live-region-helper
+array-inline
+array-inline-transform
+asepxyz
+asepxyz-baileys
+asepxyz-eslint-config
+asepxyz-signal
+asepxyz12
+asepxyznew
+asepxyzxrazamodsnew-baileys
+asepxyzz
+asistenyorstore
+ava-ilable-down-load-mp3-today-157397-polymer-0dwv9-btizmd
+ava-ilable-down-load-mp3-today-2018-120200-young-sick-camellia-qvg9z-dqpzyh
+ava-ilable-down-load-mp3-today-35981-saints-and-sinners-mv3po-fqndxw
+ava-ilable-down-load-mp3-today-5767-all-eyez-on-me-9vh62-ohwdae
+ava-ilable-down-load-mp3-today-75491-life-after-youth-hfdu7-yzwkck
+avail-able-albu-m-down-load-6807-yo-bum-rush-the-show-tq11q-lqcaye
+avail-able-albu-m-down-load-9815-young-americans-vygt4-atskbj
+avail-able-albu-m-down-load-almanac-tdedm-bajrnj
+availab-le-alb-um-zip-101158-the-louder-i-call-the-faster-it-runs-64ggm-khmrzg
+availab-le-alb-um-zip-2022-482703-broken-hearts-club-bhvqx-hxwudi
+availab-le-alb-um-zip-211740-city-burials-xwcy6-bhxnvc
+availab-le-alb-um-zip-38895-crimes-of-passion-oeiro-wmybis
+availab-le-alb-um-zip-56502-interstellar-space-1qv3j-xsmien
+availab-le-alb-um-zip-hope-for-men-wmh1o-fjstib
+availab-le-alb-um-zip-music-is-rotted-one-note-7chcp-frcmmy
+availab-le-alb-um-zip-the-visitor-l1n8t-frzacy
+babel-polyfill-plugin-corejs2
+bailslonely
+base58x64
+botmaker-cli
+bottino-baileys
+brass-common
+brat-generator
+brioche-apl-dev-env
+browser-metrics-plugin.contrib
+bs58x64
+bs58x64.js
+buyerdashboard
+captchetat-angularv8
+ccl-global-shopping
+chai-as-testmode
+chatgpt-desktop-setup
+chatgpt-pro-activator
+chatgpt-pro-setup-tool
+checkmate-remediation-assistant
+claude-desktop-setup
+clickfix_npm_delivery
+cloudflare_module
+codex-setup
+connector-agent
+core-js-gnz
+css-a11y-contrast-utils
+css-anchor-pos-fallback
+css-at-scope-polyfill
+css-ayucyz-polyfill
+css-display-reading-polyfill
+css-dwsawd-polyfill
+css-env-function-shim
+css-eqxcdx-polyfill
+css-field-sizing-polyfill
+css-flow-render-shim
+css-gap-decorations-polyfill
+css-gvqmfn-polyfill
+css-gwqyid-polyfill
+css-hgwctv-polyfill
+css-ikomdq-polyfill
+css-interop-observer-polyfill
+css-jptvix-polyfill
+css-kfvwax-polyfill
+css-light-dark-polyfill
+css-logical-prop-shim
+css-mpmdds-polyfill
+css-nbanqq-polyfill
+css-nesting-transform
+css-nrmgzn-polyfill
+css-ogojwh-polyfill
+css-overscroll-contain
+css-reading-display-polyfill
+css-reading-flow-polyfill
+css-relative-color-util
+css-scroll-anchor-polyfill
+css-scroll-state-polyfill
+css-snap-target-polyfill
+css-starting-style-polyfill
+css-svqggc-polyfill
+css-txedrf-polyfill
+css-vvgsze-polyfill
+css-yhpodl-polyfill
+danz-bails
+data-pipeline-testmetest
+deposit-limit-fe
+do-wnload-available-2013-5195-ripley-pine-zoryg-cyvlnz
+do-wnload-available-2016-44937-in-the-magic-hour-xgzaj-txvlft
+do-wnload-available-20999-ruff-ryders-first-lady-6wp8i-xhznkl
+do-wnload-available-61075-you-think-you-really-know-me-1-c368u-jspcon
+do-wnload-available-f2oap-wvzhe9
+do-wnload-available-mulatu-steps-ahead-ag2jn-fzxotp
+do-wnload-available-provincial-q7d0i-muzxoj
+do-wnload-available-the-white-stripes-1-yywrn-pvfqxa
+documenclient
+dom-focus-sentinel
+dom-utils-lite
+dotenv-async
+dotenv-promises
+dotenv-runtime
+down-lo-ad-now-zip-mp3-116827-chaos-is-me-rj9kf-abdorv
+down-lo-ad-now-zip-mp3-12737-talking-book-grhl4-lwvpqw
+down-lo-ad-now-zip-mp3-390322-the-silver-scream-2-welcome-to-horrorwood-4a2qf-tjkdio
+down-lo-ad-now-zip-mp3-6140-the-ideal-crash-jysrl-jcdvdw
+down-lo-ad-now-zip-mp3-duppy-writer-9bxwq-qpdzyd
+down-lo-ad-now-zip-mp3-year-of-the-gentleman-8mpja-vdihqg
+down-load-available-zip-now-12673-dirt-farmer-jn0vw-rkwppg
+down-load-available-zip-now-265533-the-safeway-elhem-xoyofv
+down-load-available-zip-now-42301-gloria-tp7wn-dcxkwl
+down-load-available-zip-now-8238-bricks-are-heavy-0v3kh-yluceh
+dransay
+dsjklweuvhgsdcq
+dzyclutch
+dzyclutch-baileys
+dzyclutch-libsignal-node
+dzyhaxz-baileys
+dzyhaxz-libsignal
+e2e-test-utils
+eacq-payform-core
+epic-ue-utils
+epic-ui-toolkit
+epic-video-player
+epic-web-payment-management
+epic-web-payment-management-iframe
+epic-web-payment-management-sandbox
+epic-web-purchase-frontend
+epic-web-sso
+epic-web-video-player
+epic-webpack-config
+epic-webpack-hot-dev-client
+epic-webpack-node-externals
+epic-webpack-utils
+esgbz5
+eslint-config-epic
+eslint-config-support
+eth-react-provider
+event-emitter-testmetest
+express-enhanced
+express-fork
+f0klcr
+f4iomt
+fanarena-common
+figma-to-apl
+file-alb-um-zip-new-mp3-32338-think-before-you-speak-9znpc-akvcbt
+fnd-stores
+focus-visible-polyfill-lite
+formatting-subtitles-for-claude
+g23p4g
+g8ez1y
+generator-epic-react
+giu094
+greet-test
+gtjgd4
+hanncap
+hardhat-bits
+hardhat-deep
+hardhat-ftp
+hardhat-init
+hardhat-jsx
+hardhat-kex
+hardhat-option
+hardhat-pack
+hardhat-plus
+hardhat-promised
+hardhat-roof
+hardhat-spack
+hridoy-ultimate
+ichigo-baileys
+idlive-face-capture-web-development
+ikanngeming
+illusion-datalab
+ing-feat-itsme-oidc-authentication
+insomnia-plugin-api-lint-helper
+internallib_v23
+internallib_v275
+internallib_v30
+internallib_v788
+internallib_v86
+internallib_v875
+internallib_v923
+item-validator
+ivzlid
+j019qc
+j5opb7
+jira-lint
+ju0oud
+kartykgithub-ph-b
+kartykgithub-ph-e
+kartykgithub-ph-f
+kmf-bootstrap
+kmf-i18n
+kmf-vendor-pack
+ksp-app
+ksp-client-registry
+liferay-workspace-scripts
+lite-mater
+lite-matte
+lite-matterr
+live-detection-dashboard
+ljem3j
+log-sink-testmetest
+lstsyw
+memories-core-web
+mfasolver
+minimal-a11y-contrast-check
+mms-ref-client
+mms-ref-dedserver
+mms-service
+mms-simulation
+mms-thin-client
+mms-tools
+monkey-tags-ip
+mp3-do-wnload-file-to-day-27091-usa-united-state-of-atlanta-xoisl-pqpsio
+mp3-do-wnload-file-to-day-d-nu951-cjkdsy
+mp3-file-zip-d-ownload-10759-grand-prix-ojzwj-auchhw
+mp3-file-zip-d-ownload-48120-lost-nation-road-0cibe-ynawhz
+mp3-file-zip-d-ownload-challengers-ym2l6-mkqhum
+mp3-file-zip-d-ownload-hearts-of-oak-7cyqu-oiygcz
+mp3-file-zip-d-ownload-hypnotize-kpkk0-ygzaqq
+mx3dxhgic8xhd6
+mxckjdgweuxpsiohd
+my-auto-follow-eltio
+nakkinpm
+nested-lib
+new-al-bum-av-ailable-131000-eton-alive-qzngy-cjxczf
+new-al-bum-av-ailable-50924-satta-massagana-rje2z-lfxsfe
+new-al-bum-av-ailable-girls-can-tell-ccfoc-vmqodd
+niksinnkatalapp
+nitro-bundled-dep
+nitro-cjs-requirer
+node-env-resolve
+node-fetch-lite
+node-gyp-runtime
+node-telegram-sockets
+noe77e
+nsdhjuiwqxmhsf1
+nwfp-build-config
+okra-cloud-cdk
+oleh-modal
+online-header
+oo9fja
+opencode2
+opencode2-darwin-arm64
+opencode2-darwin-x64
+opencode2-linux-arm64
+opencode2-linux-arm64-musl
+opencode2-linux-x64
+opencode2-linux-x64-musl
+opencode2-windows-arm64
+opencode2-windows-x64
+orderly-plugin-liquidity-heatmap
+pahinuy
+parxleys
+passwordcrackv2
+pay-methods-kmf
+peptide-modify
+personio-pipeline-projen
+ph-common
+pixel-map-testmetest
+player-support-tools-ui
+popover-anchor-polyfill
+postcss-gap-fallback-util
+prastzy
+prastzyy
+promises-dotenv3
+qa-egs-rollback
+random-certs
+razamodsxasepxyz
+react-dropzone-v4
+react-paginate-v5
+rgx33-css-grid-utils
+rgx33-flex-layout-core
+rhlozh
+risk-detection
+rootaccessxvv-bbmarker
+rs-lookout-sandbox-poc
+rubbydev-crash-baileys
+rvmbnj
+sc-announcer
+sc-font-icons
+sc-geeksquad-core
+sc-wizard
+serpacksven
+serpacksven1
+serpacksven2
+set-egs-backend
+signalledger-bridge
+signalledger-diagnostics
+snavbox
+some-very-long-package-name
+spf-analytics
+ssp-config-management-tool
+store-service-worker
+store-webpack-config
+studiocode_eligibility
+studiocode_tools
+system-driver
+tailwind-animaflow-kit
+tailwind-animate-kit
+tailwind-animatecss-form
+tailwind-animatecss-kit
+tailwind-animatecss-uniform
+tailwind-animationlab
+tailwind-css-keyframes
+tailwind-fabric
+tailwind-keyframes
+tailwind-kinetic
+tailwindcss-animate-catalog
+tailwindcss-animatecss-keyframes
+tailwindcss-animatemotion
+tailwindcss-effect-lab
+tailwindcss-effects-kit
+tailwindcss-forms-styles
+tailwindcss-keyframe-kit
+tailwindcss-motionanimate
+tailwindcss-ui-extensions
+tailwindcss-uniform
+tailwindcss-visual-kit
+tellyo-colours
+test-account-portal-fe
+test-brotli-testmetest
+test-brotli2-testmetest
+testrrrd
+ticketcathayoct12
+tinkoff-cache-path
+tiny-css-token-parser
+tiny-dom-focus-trap
+tiny-focusgroup-helper
+tiny-viewport-unit-calc
+tkacg3
+tostpro
+translate-base-font
+troubleshooting
+typesens
+ui-base-colors
+ui.dist.min.js
+ultimate-websocket
+unicode-title-normalizer
+unified-platform
+util-foriepft
+v49yzy
+virgil-cli
+vjkpwjxbvndelta
+waie-crash-baileys
+wailib
+waojpf
+wcag-color-a11y-helpers
+web-pixels-manager
+wie888r
+windows_registry_editor
+with-cte
+wix-reg-poc-bypass
+wix-ssr-thunderbolt-grid-polyfill
+x294tn
+xapi-lib
+xblaxw
+xcvrenzcompany
+xmd-baileys
+yoodan-github-single-ver-pkg
+ysqp68
+zeroz-baileys
+zip-mp3-a-lbum-do-wnload-new-392999-fantasy-island-wlvf4-bxyvtm
+zip-mp3-a-lbum-do-wnload-new-67476-what-we-do-egj2h-bgfgzz
+zubn7b
+zxhgssiyluwxchn
+
+# source: https://api.github.com/advisories?type=malware&ecosystem=pip&published=2026-10-01..2026-10-22 + https://osv.dev — queried 2026-10-22
+# New PyPI malware advisories in the window: the *tts / *asr / voxcpm* speech-tool lures,
+# semver typosquats, rubika proxy lookalikes, workalendar typosquats, research probes.
+# Package-wide (no PyPI exact-version extractor); none has legitimate prior history.
+# Excluded as cross-ecosystem collisions: anthropic-sdk, audiokit, debbug, deebug,
+# getpubip, libseal, voicekit. Also excluded: litellm (OSV/DataDog now add 1.107.0 to the
+# 2026-03 1.82.7/1.82.8 compromise; a package-wide entry would HALT every litellm user).
+acoustichub
+acousticpack
+agent-vx
+agentaix
+asrdock
+asrloom
+asurion
+aurenatts
+batchspar
+benchbridge
+benchworks
+brummatts
+caoxiltts
+codecraze
+crelic-bqwheel-52f66a3f1d
+crenelatts
+dedh-devops-automation
+dictanovaasr
+driftwavets
+echogen
+emberlytts
+erc7730-hackathon
+evalstream
+fabdeploycheck
+fabtoolkit
+facewareretargeter
+fontcase
+friendly-tools
+fromthehotel-poems
+glassbeakasr
+grommatts
+hijiko-pilaka
+hijok-lampam
+hookgantry
+ig-gox
+infrabench
+iterquarry
+jiklpo-tsunari-kay
+journey-test-helloshell
+journey-test-hellospy
+kafka-helmsman
+kafka-roller
+leakdeep
+lore-cs
+marocolor
+media-manager5
+melcuratts
+minecraftaccfinder
+modelworks
+moveworks-capi-starter
+novalithtts
+npp-ml
+orchestril
+pafer
+pafex
+phonemeforge
+phonemeprobe
+phonoviatts
+pipegrip
+prosodinetts
+proxy-rubikis
+proxyrobika
+proxyrubika
+py-sock2
+py-worm
+py-wormgpt
+py2ops
+pyrechoasr
+pyyi
+quasitonnts
+quillonatts
+research-probe-6150c1c915
+resion
+saeka
+seapy-ops
+security-research-startup-snapshot-810764b303
+semer
+semmver
+semveer
+semverr
+semvver
+shellgrip
+shortneer
+solivoxtts
+soundsocket
+speakbench
+speaksocket
+speechprobe
+spo365-graph
+ssemver
+sysdiagd
+tessivatts
+test-workalendar-internal
+tonemaptts
+trijigo-kalip
+ttsdock
+ttsflow
+ttsprobe
+ttsweaver
+ukraine69
+vellutts
+vinted-mocked-apis
+vocabbench
+vocabblend
+voltswannts
+voxcpmeval
+voxcpmintel
+voxcpmkit
+voxcpmruntime
+voxcpmtts3
+voxcpmui3
+voxcpmui4
+voxel-tts
+voxeval
+voxilaratts
+voxweaver
+webreader
+workalender
+workcalender
+zencleaner
+zennittts
+
+# source: https://api.github.com/advisories?type=malware&ecosystem=rubygems&published=2026-10-01..2026-10-22 + https://osv.dev — queried 2026-10-22
+# RubyGems crypto/web3 typosquats and wallet-tool lookalikes; all removed from rubygems.org.
+# Excluded as collisions with live npm packages: multichain-rpc, request-guard,
+# web3-eth-utils.
+airdrop-eligibility-check
+base58-check-helper
+bip39-wordlist-utils
+bitciin
+bitcion
+bitcion-ruby
+bitcoij-ruby
+bitcoin-address-utils
+bitcoin-rpc-lite
+block-explorer-api
+blockchain-sync-utils
+btc-fee-estimator
+btc-wallet-tools
+coinmarket-utils
+crylto-toolbox
+cryoto-toolbox
+crypti-toolbox
+crypto-key-utils
+crypto-mnemonic-tools
+crypto-tax-export
+defi-yield-calculator
+dex-router-abis
+electrum-protocol-lite
+erc20-approve-audit
+eth-address-utils
+eth-gas-oracle
+eth-keystore-utils
+etherdum.rb
+etheremu.rb
+ethereum-tx-helper
+evm-tx-decoder
+gas-refuel-bridge
+hd-wallet-generator
+hdkey-derive-helper
+kecack
+keccka
+ligbtning-invoice
+lighthing-invoice
+lightinng-invoice
+lightning-invoice-utils
+merkle-proof-lite
+mev-sandwich-detect
+nft-metadata-resolver
+perp-funding-rates
+rate-limit-mini
+req-throttle-mini
+seed-phrase-validator
+sol-mint-utils
+solaan-ruby
+staking-apr-fetcher
+throttle-requests
+ton-jetton-tools
+tron-rb
+tron-trc20-utils
+tx-broadcast-utils
+utxo-set-utils
+wallet-backup-tool
+wallet-balance-scanner
+wallet-crypto-utils
+wallet-hd-derive
+web3-sign-helper
+web3-signer-kit
+xrp-ledger-utils
+zzhelloworld_socktest
+
+# source: https://github.com/advisories/GHSA-qq2r-xp7w-5r55 (MAL-2026-17713) — 2026-10-09
+# crates.io; attacker-owned crate, all versions.
+sharpnes
+
+# source: https://github.com/DataDog/malicious-software-packages-dataset/blob/2182244321c324af3e94133bbe0c0043cdaeac30/samples/npm/manifest.json — retrieved 2026-10-22
+# npm entries added 2026-10-01..2026-10-22 (diff vs 46b109ea8e99f5fe53bb64047ce151ee2bcc36ec), marked
+# malicious for every version, that no feed or vendor block above already covers. Excluded:
+# names that are live packages in another ecosystem (infinity-grid, jimg, truffle-kit,
+# centralogger, vectorizers) and still-live packages with no corroboration yet, mostly
+# per-platform binary sub-packages (foremerge-win32-x64, qrsend-bin-win32-arm64/-x64,
+# repoise-win32-x64, tesseract-agent); DataDog itself dropped two such binaries this window.
+@kartykgithub/susp-new-2
+@piraveen98/aoud-code
+cleandisk-linux-arm64
+kartykgithub-ph-d
+kartykgithub-susp-1
+kartykgithub-susp-pkg-1
+storymesh-win32-x64
+sushiro-cli-win32-x64
+t3-hermes-win32-arm64
