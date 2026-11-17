@@ -244,14 +244,23 @@ def test_canonical_policy_has_pinned_version_and_complete_set_shape() -> None:
         ("PyPI", "telnyx", "4.87.1"),
         ("npm", "axios", "1.14.1"),
         ("npm", "axios", "0.30.4"),
+        ("npm", "@ethersphere/bee-js", "13.3.0"),
+        ("npm", "@wppconnect/server", "2.10.82"),
+        ("npm", "screenshot-desktop", "1.16.0"),
+        ("npm", "@emilgroup/discount-sdk", "1.5.2"),
+        ("npm", "nicegui", "0.1.0"),
+        ("PyPI", "fragment-api-py", "14.4.2"),
     }
-    assert len(actual) == 2442
+    assert len(actual) == 2724
     assert expected_sentinels <= actual
-    assert len(iocs) == 7448
-    assert sum(bool(entry.version_evidence) for entry in iocs.values()) == 538
+    assert len(iocs) == 9455
+    assert sum(bool(entry.version_evidence) for entry in iocs.values()) == 619
     assert iocs["litellm"].scope == frozenset({"PyPI"})
     assert iocs["tensorlake"].scope == frozenset({"npm"})
     assert iocs["axios"].scope == frozenset({"npm"})
+    # Cross-ecosystem namesake: the npm squat is scoped so PyPI nicegui never matches.
+    assert iocs["nicegui"].scope == frozenset({"npm"})
+    assert iocs["fragment-api-py"].scope == frozenset({"PyPI"})
 
     complete = {
         (ecosystem, package)
