@@ -42,7 +42,7 @@ extractor finding no installed record clears a textual metadata-only match. Lega
 provenance but are not required for clearance.
 
 Exact extraction covers package-lock, Yarn Classic, structurally validated Yarn
-Berry `npm:` locators (lockfile `__metadata.version` 6, 8, 9 and 10; any other
+Berry `npm:` locators (lockfile `__metadata.version` 6, 7, 8, 9 and 10; any other
 generation keeps a version-scoped hit), structurally validated pnpm package keys/importer
 versions (`overrides:` selectors are not install records; importer versions may
 carry a peer suffix such as `1.7.7(debug@4.3.7)`), Bun (`bun.lock` text and the binary `bun.lockb`, formats 2 and 3), and
